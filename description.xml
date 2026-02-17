@@ -4,11 +4,14 @@
   xmlns:dep="http://openoffice.org/extensions/description/2006"
   xmlns:xlink="http://www.w3.org/1999/xlink">
     <identifier value="org.extension.writerai"/>
-    <version value="0.0.1"/>
+    <version value="0.0.2"/>
     <publisher>
-        <name>WriterAI</name>
+        <name xlink:href="mailto:anna.wu.0212@gmail.com">anna.wu</name>
     </publisher>
     <display-name>
         <name>Writer.ai</name>
     </display-name>
+    <icon>
+        <default xlink:href="assets/writer-ai.png"/>
+    </icon>
 </description>
