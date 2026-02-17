@@ -77,11 +77,9 @@ class MainJob(unohelper.Base, XJobExecutor):
         return bool(value)
 
     BACKEND_PRESETS = [
-        ("Gemini 1.5 Pro", "chat", "https://generativelanguage.googleapis.com/v1beta"),
-        ("Gemini 1.5 Flash", "chat", "https://generativelanguage.googleapis.com/v1beta"),
-        ("Gemini 1.0 Pro", "chat", "https://generativelanguage.googleapis.com/v1beta"),
+        ("Gemini 3 Pro", "chat", "https://generativelanguage.googleapis.com/v1beta"),
+        ("Gemini 3 Flash", "chat", "https://generativelanguage.googleapis.com/v1beta"),
         ("QWen", "chat", "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation"),
-        ("Custom", None, None),
     ]
 
     def _detect_backend(self):
