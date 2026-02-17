@@ -1,0 +1,4 @@
+用于 LibreOffice Writer 的 AI 智能体，基于 Qwen 或 Gemini。
+能够执行诸如：
+1. 快速文档格式调整
+2. 插入资源（如图片、表格、引用等）

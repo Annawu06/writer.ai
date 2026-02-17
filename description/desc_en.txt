@@ -1,0 +1,2 @@
+AI agent for LibreOffice Writer with Qwen or Gemini.
+Do task such as quick word format, resource insert

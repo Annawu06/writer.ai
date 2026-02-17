@@ -1,17 +1,25 @@
-<?xml version='1.0' encoding='UTF-8'?>
-<description
-  xmlns="http://openoffice.org/extensions/description/2006"
-  xmlns:dep="http://openoffice.org/extensions/description/2006"
+<?xml version="1.0" encoding="UTF-8"?>
+<description xmlns  = "http://openoffice.org/extensions/description/2006"             
+  xmlns:d = "http://openoffice.org/extensions/description/2006"             
+  xmlns:l = "http://libreoffice.org/extensions/description/2011" 
   xmlns:xlink="http://www.w3.org/1999/xlink">
-    <identifier value="org.extension.writerai"/>
-    <version value="0.0.2"/>
-    <publisher>
-        <name xlink:href="mailto:anna.wu.0212@gmail.com">anna.wu</name>
-    </publisher>
-    <display-name>
-        <name>Writer.ai</name>
-    </display-name>
-    <icon>
-        <default xlink:href="assets/writer-ai.png"/>
-    </icon>
+  <identifier value="org.extension.writerai"/>
+  <version value="0.0.2"/>
+  <publisher>
+    <name xlink:href="mailto:anna.wu.0212@gmail.com">anna.wu</name>
+  </publisher>
+  <display-name>
+    <name>Writer.ai</name>
+    <name lang="en">Writer.ai</name>
+  </display-name>
+  <icon>
+    <default xlink:href="assets/writer-ai.png"/>
+  </icon>
+  <dependencies>
+    <l:LibreOffice-minimal-version value="25.8.4" d:name="LibreOffice.org 25.8.4 or higher" />
+  </dependencies>
+  <extension-description>
+    <src xlink:href="description/desc_en.txt"/>
+    <src xlink:href="description/desc_zh-cn.txt" lang="zh-cn" />
+  </extension-description>
 </description>
