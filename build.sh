@@ -22,8 +22,6 @@ if [ $? -eq 0 ]; then
     echo "  2. Tools > Extension Manager"
     echo "  3. Add > Select ${EXTENSION_NAME}.oxt"
     echo ""
-    echo "Or via command line:"
-    echo "  unopkg add --shared ${EXTENSION_NAME}.oxt"
 else
     echo "Error creating package"
     exit 1
