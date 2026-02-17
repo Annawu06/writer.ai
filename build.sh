@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build script for the writer.ai .oxt extension package
+# /opt/libreoffice26.2/program/soffice --writer --accept="socket,host=localhost,port=2002;urp;"
 
 # Extension name
 EXTENSION_NAME="writer.ai"
