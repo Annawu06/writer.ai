@@ -209,10 +209,10 @@ class MainJob(unohelper.Base, XJobExecutor):
         BUTTON_HEIGHT = 25
         HORI_SEP = 10
         VERT_SEP = 10
-        LABEL_WIDTH = 100
+        LABEL_HEIGHT = 25
         EDIT_HEIGHT = 25 * 5
 
-        HEIGHT = VERT_MARGIN * 3 + EDIT_HEIGHT + BUTTON_HEIGHT
+        HEIGHT = VERT_MARGIN * 3 + LABEL_HEIGHT + VERT_SEP + EDIT_HEIGHT + BUTTON_HEIGHT
 
         from com.sun.star.awt.PosSize import POS, SIZE, POSSIZE
         from com.sun.star.awt.PushButtonType import OK, CANCEL
@@ -236,14 +236,14 @@ class MainJob(unohelper.Base, XJobExecutor):
             for key, value in props.items():
                 setattr(model, key, value)
 
-        add("label", "FixedText", HORI_MARGIN, VERT_MARGIN + 5, LABEL_WIDTH, 25, {"Label": str(message)})
+        add("label", "FixedText", HORI_MARGIN, VERT_MARGIN, WIDTH - HORI_MARGIN * 2, LABEL_HEIGHT, {"Label": str(message)})
         
-        edit_x = HORI_MARGIN + LABEL_WIDTH + HORI_SEP
-        edit_width = WIDTH - edit_x - HORI_MARGIN
-        add("edit", "Edit", edit_x, VERT_MARGIN, edit_width, EDIT_HEIGHT, 
+        edit_y = VERT_MARGIN + LABEL_HEIGHT + VERT_SEP
+        edit_width = WIDTH - HORI_MARGIN * 2
+        add("edit", "Edit", HORI_MARGIN, edit_y, edit_width, EDIT_HEIGHT, 
             {"Text": str(default), "MultiLine": True, "VScroll": True})
         
-        buttons_y = VERT_MARGIN + EDIT_HEIGHT + VERT_SEP
+        buttons_y = edit_y + EDIT_HEIGHT + VERT_SEP
 
         ok_x = (WIDTH - (BUTTON_WIDTH * 2 + HORI_SEP)) / 2
         add("btn_ok", "Button", ok_x, buttons_y, BUTTON_WIDTH, BUTTON_HEIGHT, {"PushButtonType": OK, "DefaultButton": True})
