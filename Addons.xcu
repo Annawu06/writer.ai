@@ -3,7 +3,7 @@
     <node oor:name="OfficeMenuBar">
       <node oor:name="org.extension.writerai.menubar" oor:op="replace">
         <prop oor:name="Title" oor:type="xs:string">
-          <value xml:lang="en-US">Writer AI</value>
+          <value xml:lang="en-US">Writer.AI</value>
         </prop>
         <prop oor:name="Context" oor:type="xs:string">
           <value>com.sun.star.text.TextDocument</value>
@@ -11,7 +11,7 @@
         <node oor:name="Submenu">
           <node oor:name="M1" oor:op="replace">
             <prop oor:name="Title">
-              <value xml:lang="en-US">AI format</value>
+              <value xml:lang="en-US">AI Formatter</value>
             </prop>
             <prop oor:name="URL">
               <value>service:org.extension.writerai.do?format</value>

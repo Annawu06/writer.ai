@@ -12,7 +12,7 @@ fi
 
 # Create the new package
 echo "Creating package ${EXTENSION_NAME}.oxt..."
-zip -r "${EXTENSION_NAME}.oxt" description.xml Addons.xcu main.py META-INF
+zip -r "${EXTENSION_NAME}.oxt" description.xml Addons.xcu main.py META-INF assets description
 
 if [ $? -eq 0 ]; then
     echo "Package created successfully: ${EXTENSION_NAME}.oxt"

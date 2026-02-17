@@ -277,7 +277,7 @@ class MainJob(unohelper.Base, XJobExecutor):
         
         elif args == "format":
             log_to_console("Entering format branch...")
-            user_input = self.input_box("Input format:", "AI Formatter", "example:highlight the first line on page 1")
+            user_input = self.input_box("Document Format:", "AI Formatter", "example:highlight the first line on page 1")
             if user_input:
                 log_to_console(f"User input received: {user_input}")
                 try:

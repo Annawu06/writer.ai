@@ -6,11 +6,11 @@
   <identifier value="org.extension.writerai"/>
   <version value="0.0.2"/>
   <publisher>
-    <name xlink:href="mailto:anna.wu.0212@gmail.com">anna.wu</name>
+    <name xlink:href="mailto:anna.wu.0212@gmail.com">Anna.Wu</name>
   </publisher>
   <display-name>
-    <name>Writer.ai</name>
-    <name lang="en">Writer.ai</name>
+    <name>Writer.AI</name>
+    <name lang="en">Writer.AI</name>
   </display-name>
   <icon>
     <default xlink:href="assets/writer-ai.png"/>
