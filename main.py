@@ -82,6 +82,10 @@ class MainJob(unohelper.Base, XJobExecutor):
         ("QWen", "chat", "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation"),
     ]
 
+
+        
+    
+    
     def _detect_backend(self):
         # ... [Unchanged] ...
         model_name = self.get_config("model", "").lower()
@@ -277,15 +281,32 @@ class MainJob(unohelper.Base, XJobExecutor):
         
         elif args == "format":
             log_to_console("Entering format branch...")
-            user_input = self.input_box("Document Format:", "AI Formatter", "example:highlight the first line on page 1")
+            user_input = self.input_box(
+                "Document Format:", 
+                "AI Formatter", 
+                "example:highlight the first line on page 1"
+            )
+
             if user_input:
                 log_to_console(f"User input received: {user_input}")
+
                 try:
                     model = self.desktop.getCurrentComponent()
-                    if hasattr(model, "Text"):
-                        text = model.Text
-                        cursor = model.getCurrentController().getViewCursor()
-                        text.insertString(cursor, f"User entered: {user_input}", 0)
+
+                    # 确保是 Writer 文档
+                    if not model.supportsService("com.sun.star.text.TextDocument"):
+                        log_to_console("Not a Writer document.")
+                        return
+
+                    controller = model.getCurrentController()
+                    cursor = controller.getViewCursor()
+
+                    text = cursor.getText()
+
+                    text.insertString(cursor, f"\nUser entered: {user_input}\n", False)
+
+                    log_to_console("Text inserted successfully.")
+
                 except Exception as e:
                     log_to_console("--- EXCEPTION in trigger(format) ---")
                     log_to_console(e)
