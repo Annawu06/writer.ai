@@ -62,17 +62,7 @@ def log_to_console(*args):
     # Writing to stderr is sometimes more reliable for seeing output in a console.
     print(*args, file=sys.stderr)
     sys.stderr.flush()
-    
- 
 
-COLOR_MAP = {
-    "yellow": 0xFFFF00,
-    "red": 0xFF0000,
-    "green": 0x00FF00,
-    "blue": 0x0000FF,
-    "gray": 0xCCCCCC,
-    "none": -1
-}
 
 def get_doc(ctx):
     smgr = ctx.getServiceManager()
@@ -99,40 +89,47 @@ class Format:
         
 
     def parse_color(self, color):
-        # 预定义的标准颜色映射（十进制数值）
-        colors = {
-            "yellow": 16776960,  # 0xFFFF00
-            "red":    16711680,  # 0xFF0000
-            "blue":   255,       # 0x0000FF
-            "green":  65280,     # 0x00FF00
-            "black":  0,
-            "white":  16777215   # 0xFFFFFF
+        # 1. 扩展的标准 Web 颜色映射 (常用部分，你可以根据需要继续增加)
+        # 提示：LibreOffice 的颜色是 Long 类型，即 R*65536 + G*256 + B
+        if isinstance(color, int):
+            return color
+        std_colors = {
+            "white": 0xFFFFFF, "black": 0x000000, "gray": 0x808080, "silver": 0xC0C0C0,
+            "darkgray": 0xA9A9A9,"red": 0xFF0000, "darkred": 0x8B0000, "maroon": 0x800000,
+            "orange": 0xFFA500, "yellow": 0xFFFF00,
+            "olive": 0x808000, "lime": 0x00FF00, "green": 0x008000, "aqua": 0x00FFFF,
+            "teal": 0x008080, "blue": 0x0000FF, "navy": 0x000080, "fuchsia": 0xFF00FF,
+            "purple": 0x800080, "pink": 0xFFC0CB, "gold": 0xFFD700, "brown": 0xA52A2A,
+            "cyan": 0x00FFFF, "magenta": 0xFF00FF,"tiffanyblue": 0x0ABAB5
         }
 
-        # 1. 处理空值或异常类型
+    # 处理 True (AI表示“默认高亮”)
+        if color is True:
+            return std_colors["yellow"]
+        
         if not color or not isinstance(color, str):
-            return colors["yellow"] # 默认回退颜色
+            return std_colors["yellow"]
 
-        # 2. 预处理字符串：转小写、去空格、去首部 #
-        clean_color = str(color).lower().strip().lstrip('#')
+        # 2. 预处理：【关键】除了转小写，还要去掉空格
+        # 这样 "Dark Red" 会变成 "darkred"，就能匹配字典了
+        clean_color = color.lower().replace(" ", "").strip().lstrip('#')
 
-        # 3. 检查是否在预定义的颜色字典中
-        if clean_color in colors:
-            return colors[clean_color]
+        # 3. 尝试从字典匹配
+        if clean_color in std_colors:
+            return std_colors[clean_color]
 
-        # 4. 增强：支持十六进制字符串解析 (例如 "FF0000" 或 "F00")
-        # 使用正则检查是否符合 3 位或 6 位十六进制格式
+        # 4. 尝试十六进制匹配 (处理 AI 给出的 "B2C8D9")
         if re.fullmatch(r'[0-9a-f]{3}|[0-9a-f]{6}', clean_color):
             try:
-                # 如果是 3 位简写 (如 F00 -> FF0000)
                 if len(clean_color) == 3:
                     clean_color = ''.join([c*2 for c in clean_color])
                 return int(clean_color, 16)
             except ValueError:
                 pass
 
-        # 5. 如果都匹配不上，返回默认颜色
-        return colors["yellow"]
+        # 5. 保底：建议改成紫色 0x800080。
+        # 如果运行后看到紫色，说明输入的颜色既不在字典里，也不是合法的十六进制。
+        return std_colors["yellow"]
         
     def get_cursor(self):
         """
@@ -204,11 +201,14 @@ class Format:
     # ------------------------------------------------
 
     def set_font_color(self, cursor, rgb):
-        """
-        rgb: 例如 0xFF0000
-        """
-        cursor = cursor
-        cursor.CharColor = rgb
+        try:
+            # 如果漏网之鱼是字符串，这里做最后一次转换
+            if isinstance(rgb, str):
+                rgb = self.parse_color(rgb)
+            
+            cursor.CharColor = int(rgb) 
+        except Exception as e:
+            log_to_console(f"Error setting color: {e}")
 
     # ------------------------------------------------
     # 高亮
@@ -361,12 +361,17 @@ def execute_format_request(format_request, fmt):
             cursor = fmt.goto_line(line_num)
 
             for operation, value in line_value.items():
-
                 if operation in FORMAT_FUNCTION_MAP:
                     func = getattr(fmt, FORMAT_FUNCTION_MAP[operation])
 
-                    is_toggle = value in (True, None)
+    
+                    color_related_ops = ["font_color", "highlight", "underline"]
+                    
+                    if operation in color_related_ops and isinstance(value, str):
+                        # 确保转换成 LibreOffice 需要的 Long 类型
+                        value = fmt.parse_color(value)
 
+                    is_toggle = value in (True, None)
                     if is_toggle:
                         func(cursor)
                     else:
@@ -516,90 +521,78 @@ class MainJob(unohelper.Base, XJobExecutor):
                 replace_selection
                 clear_format
 
-                6. 属性值规则：
+                6. 属性值规则 (highlight / underline / font_color)：
 
-                bold → true
-                italic → true
-                underline → true 或颜色字符串
+                - 如果用户没有指定具体颜色：
+                                      使用 true（例如 {"highlight": true}），程序将应用默认值。
 
-                highlight：
+                                    - 如果用户指定了具体颜色（无论是中文“天蓝色”、英文“cyan”、RGB 还是十六进制）：
+                                      你必须将其转换为标准的 6 位十六进制字符串（不带 # 号）。
+                                      例如：
+                                      输入 "红色" -> 输出 "FF0000"
+                                      输入 "light blue" -> 输出 "ADD8E6"
+                                      输入 "rgb(255, 0, 0)" -> 输出 "FF0000"
+                                      输入 "#00FF00" -> 输出 "00FF00"
+                                      如果你识别到品牌特定颜色（如 Tiffany Blue, Coca-Cola Red），请务必使用其公认的标准 Hex 代码（如 Tiffany Blue = 0ABAB5）
 
-                如果用户没有指定颜色：
+                7. 组合逻辑示例：
 
-                "highlight": true
+                                    输入：将第一页第二行设置为紫色高亮并加粗
+                                    输出：
+                                    {
+                                      "page_1": {
+                                        "line_2": {
+                                          "highlight": "800080",
+                                          "bold": true
+                                        }
+                                      }
+                                    }
 
-                如果用户指定颜色：
-
-                "highlight": "color"
-
-                例如：
-
-                yellow
-                red
-                blue
-                green
-
-                7. underline 颜色规则：
-
-                如果用户指定颜色：
-
-                "underline": "red"
-
-                如果没有指定：
-
-                "underline": true
-
-                8. highlight 颜色对应 RGB（仅供参考，不需要输出 RGB）：
-
-                yellow = 16776960
-                red = 16711680
-                blue = 255
-                green = 65280
-
-                9. 只在用户明确提到颜色时才输出颜色。
-
+                8. 严禁事项：
+                - 严禁在 JSON 的颜色值中输出 "red"、"blue" 等单词。
+                - 必须统一输出 6 位十六进制（如 "FFFF00"），确保后端 parse_color 函数能直接转换。
                 10. 如果用户没有指定某个属性，不要推测。
 
                 ---
 
-                示例
+                                示例
 
-                输入：
+                                输入：
 
-                bold the first line of page 1 and highlight line 4 on page 1
+                                bold the first line of page 1 and highlight line 4 on page 1
 
-                输出：
+                                输出：
 
-                {
-                  "page_1": {
-                    "line_1": {"bold": true},
-                    "line_4": {"highlight": true}
-                  }
-                }
+                                {
+                                  "page_1": {
+                                    "line_1": {"bold": true},
+                                    "line_4": {"highlight": true}
+                                  }
+                                }
 
-                输入：
+                                输入：
 
-                highlight line 2 of page 3 in yellow
+                                highlight line 2 of page 3 in yellow
 
-                输出：
+                                输出：
 
-                {
-                  "page_3": {
-                    "line_2": {"highlight": "yellow"}
-                  }
-                }
+                                {
+                                  "page_3": {
+                                    "line_2": {"highlight": "yellow"}
+                                  }
+                                }
 
-                输入：
+                                输入：
 
-                red underline the first line on page 2
+                                red underline the first line on page 2
 
-                输出：
+                                输出：
 
-                {
-                  "page_2": {
-                    "line_1": {"underline": "red"}
-                  }
-                }
+                                {
+                                  "page_2": {
+                                    "line_1": {"underline": "red"}
+                                  }
+                                }
                 
                 11. 聚合逻辑 (Aggregation Logic)：
                    - 你必须维护一个全局字典对象。
