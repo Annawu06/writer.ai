@@ -585,11 +585,26 @@ class MainJob(unohelper.Base, XJobExecutor):
                                               }
                                             }
 
-                                            # Key Rules
-                                            1. 范围判定：
-                                               - 用户提到“全文”、“整篇”、“全部文档” -> 使用顶级键名 "all_pages"。
-                                               - 用户提到“整页”、“这页全部” -> 在对应页面下使用 "line_all"。
-                                               - 默认情况 -> 使用 "page_n" 和 "line_n"。
+                                           # 1. Structural Range Protocol (MUTUALLY EXCLUSIVE)
+                                            You MUST choose ONLY ONE of the following three structures. NEVER mix them.
+
+                                            - [RULE A] GLOBAL ONLY: 
+                                              If the user says "all", "entire doc", "everywhere".
+                                              Format: {"all_pages": {"bold": true, ...}} 
+                                              (STRICT: No "line_n" keys allowed inside)
+
+                                            - [RULE B] PAGE-WIDE: 
+                                              If the user says "all of page 1", "entire page 2".
+                                              Format: {"page_1": {"line_all": {"bold": true, ...}}}
+
+                                            - [RULE C] SPECIFIC LOCATION: 
+                                              If the user says "first paragraph", "line 3", "page 1 line 1".
+                                              Format: {"page_1": {"line_1": {"bold": true, ...}}}
+                                              (STRICT: Even if it's the "first paragraph" of the whole doc, use "page_1" -> "line_1", NEVER "all_pages")
+
+                                            # 2. Logic Priority
+                                            - If a specific location (paragraph/line) is mentioned, RULE C overrides everything.
+                                            - NEVER nest "line_n" or "line_all" under "all_pages".
 
                                             2. 颜色规则 (font_color/highlight/underline)：
                                                - 支持十六进制字符串（如 "FF5733"）。
@@ -636,6 +651,34 @@ class MainJob(unohelper.Base, XJobExecutor):
                                                            - "align_left": true
                                                            - "align_right": true
                                                            - "align_justify": true
+                                                           
+                                            7.# Semantic Mapping Rules (Strict Compliance)
+
+                                                    1. Font Names (Mapping to Backend Dictionary):
+                                                       - If the user describes a "formal" or "academic" style -> use "formal".
+                                                       - If the user describes "modern", "clean", or "minimal" -> use "modern".
+                                                       - If the user mentions "code", "programming", or "terminal" -> use "code".
+                                                       - For Chinese styles: "black-style/bold-style" -> "heiti", "brush/handwriting" -> "kaiti", "standard/print" -> "songti".
+                                                       - If a specific font name is mentioned (e.g., "Arial"), use it directly.
+
+                                                    2. Color Semantics (Strict Hex Translation):
+                                                       - "Tiffany Blue" -> "0ABAB5"
+                                                       - "Sakura Pink" -> "FFB7C5"
+                                                       - "Warning / Danger" -> "FF0000" (Red)
+                                                       - "Success / Go" -> "008000" (Green)
+                                                       - "Sky Blue" -> "87CEEB"
+                                                       - "Gold" -> "FFD700"
+                                                       - If the user says "default highlight", do not provide a hex, just use: {"highlight": true}
+
+                                                    3. Alignment Translation:
+                                                       - "Center the text" -> {"align_center": true}
+                                                       - "Align to the right/side" -> {"align_right": true}
+                                                       - "Justify the paragraph" -> {"align_justify": true}
+                                                       - "Standard/Normal alignment" -> {"align_left": true}
+
+                                                    # Operational Logic
+                                                    - **Constraint**: Never invent keys. Only use keys present in the allowed list: [bold, italic, underline, font_size, font_color, font_name, highlight, remove_highlight, align_center, align_left, align_right, align_justify, clear_format].
+                                                    - **Priority**: If a user specifies a color for a style (e.g., "red underline"), the property value must be the Hex code: {"underline": "FF0000"}.
                                                    
                                             7. 样式开关：
                                                - bold, italic, underline 等属性使用 true/false。
