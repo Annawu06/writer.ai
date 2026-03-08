@@ -17,12 +17,16 @@ from com.sun.star.util.MeasureUnit import TWIP
 from com.sun.star.awt.FontWeight import BOLD
 from com.sun.star.awt.FontSlant import ITALIC
 from com.sun.star.awt.FontUnderline import SINGLE
-from com.sun.star.style.ParagraphAdjust import CENTER, LEFT, RIGHT, BLOCK
+from com.sun.star.style.ParagraphAdjust import LEFT, RIGHT, CENTER, BLOCK
 
 from com.sun.star.ui.dialogs.TemplateDescription import FILEOPEN_SIMPLE
 
 from com.sun.star.awt.MessageBoxButtons import BUTTONS_YES_NO
 from com.sun.star.awt.MessageBoxResults import YES
+
+from com.sun.star.awt.FontWeight import NORMAL
+from com.sun.star.awt.FontSlant import NONE
+from com.sun.star.awt.FontUnderline import NONE as UNDERLINE_NONE
 
 
 
@@ -189,12 +193,11 @@ class Format:
     # 字体大小
     # ------------------------------------------------
 
-    def set_font_size(self, cursor,size):
-        """
-        size: int (例如 12 / 14)
-        """
-        cursor = cursor
+    def set_font_size(self, cursor, size):
+        size = float(size)
+
         cursor.CharHeight = size
+        cursor.CharHeightAsian = size
 
     # ------------------------------------------------
     # 字体颜色
@@ -228,20 +231,27 @@ class Format:
     # 段落对齐
     # ------------------------------------------------
 
-    def align_center(self,cursor):
-        cursor = cursor
+
+    def align_center(self, cursor):
+
+        cursor.gotoStartOfParagraph(False)
+        cursor.gotoEndOfParagraph(True)
+
         cursor.ParaAdjust = CENTER
 
-    def align_left(self,cursor):
-        cursor = cursor
+    def align_left(self, cursor):
+        cursor.gotoStartOfParagraph(False)
+        cursor.gotoEndOfParagraph(True)
         cursor.ParaAdjust = LEFT
 
-    def align_right(self,cursor):
-        cursor = cursor
+    def align_right(self, cursor):
+        cursor.gotoStartOfParagraph(False)
+        cursor.gotoEndOfParagraph(True)
         cursor.ParaAdjust = RIGHT
 
-    def align_justify(self,cursor):
-        cursor = cursor
+    def align_justify(self, cursor):
+        cursor.gotoStartOfParagraph(False)
+        cursor.gotoEndOfParagraph(True)
         cursor.ParaAdjust = BLOCK
 
     # ------------------------------------------------
@@ -275,13 +285,21 @@ class Format:
     # 清除所有格式
     # ------------------------------------------------
 
-    def clear_format(self,cursor):
-        cursor = cursor
-        cursor.CharWeight = 100
-        cursor.CharPosture = 0
-        cursor.CharUnderline = 0
+
+
+    def clear_format(self, cursor):
+
+        cursor.CharWeight = NORMAL
+        cursor.CharPosture = NONE
+        cursor.CharUnderline = UNDERLINE_NONE
+
+        cursor.CharStrikeout = 0
+
+        cursor.CharColor = -1
         cursor.CharBackColor = -1
-        
+
+        cursor.CharHeight = 12
+            
         
 
     
@@ -343,18 +361,15 @@ def execute_format_request(format_request, fmt):
             cursor = fmt.goto_line(line_num)
 
             for operation, value in line_value.items():
-                if operation in FORMAT_FUNCTION_MAP:
-                    func_name = FORMAT_FUNCTION_MAP[operation]
-                    func = getattr(fmt, func_name)
 
-                    # 检查 value 是否只是一个开关标记（布尔值或字符串 "true"）
-                    is_toggle = value in (True, None) or (isinstance(value, str) and value.lower() == "true")
+                if operation in FORMAT_FUNCTION_MAP:
+                    func = getattr(fmt, FORMAT_FUNCTION_MAP[operation])
+
+                    is_toggle = value in (True, None)
 
                     if is_toggle:
-                        # 仅传递 cursor，例如调用 set_bold(cursor)
                         func(cursor)
                     else:
-                        # 传递 cursor 和具体数值，例如调用 highlight(cursor, "yellow")
                         func(cursor, value)
                         
   
@@ -484,11 +499,22 @@ class MainJob(unohelper.Base, XJobExecutor):
                 }
 
                 5. 支持的属性：
+                
+                font_size
+                font_color
+                font_name
 
+                align_center
+                align_left
+                align_right
+                align_justify
                 bold
                 italic
                 underline
                 highlight
+                insert_text
+                replace_selection
+                clear_format
 
                 6. 属性值规则：
 
