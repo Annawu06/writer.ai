@@ -136,6 +136,31 @@ class Format:
             获取当前文本光标
         """
         return self.controller.getViewCursor()
+        
+    def get_all_lines_cursor(self, page_num):
+        """
+            获取指定页码整页内容的 Cursor
+        """
+        try:
+            # 1. 先跳转到该页
+            self.goto_page(page_num)
+            view_cursor = self.doc.CurrentController.getViewCursor()
+            
+            # 2. 移动到该页开头
+            view_cursor.jumpToStartOfPage()
+            start_range = view_cursor.getStart()
+            
+            # 3. 移动到该页结尾
+            view_cursor.jumpToEndOfPage()
+            end_range = view_cursor.getEnd()
+            
+            # 4. 创建一个包含整个页面的 TextCursor
+            cursor = self.doc.Text.createTextCursorByRange(start_range)
+            cursor.gotoRange(end_range, True) # True 表示“扩展选中”
+            return cursor
+        except Exception as e:
+            log_to_console(f"Error creating page cursor: {e}")
+            return self.doc.Text.createTextCursor() # 出错则返回普通 cursor 兜底
 
     def get_selection(self):
         """
@@ -185,6 +210,60 @@ class Format:
         cursor.CharUnderlineHasColor = True
         if color:
             cursor.CharUnderlineColor = self.parse_color(color)
+
+
+
+    def set_font_name(self, cursor, font_name):
+            try:
+                if not font_name or not isinstance(font_name, str):
+                    return
+                
+                # 扩展语义映射：将 AI 的描述性词汇映射到 LibreOffice 常用字体
+                font_map = {
+                    # --- 基础类别 ---
+                    "serif": "Libre Serif",
+                    "sans-serif": "Libre Sans",
+                    "monospace": "Liberation Mono",
+                    "code": "Consolas",
+                    
+                    # --- 现代/简约风格 ---
+                    "modern": "Noto Sans",
+                    "clean": "DejaVu Sans",
+                    "minimal": "Inter",
+                    
+                    # --- 正式/学术风格 ---
+                    "formal": "Libre Baskerville",
+                    "academic": "Linux Libertine G",
+                    "professional": "Liberation Serif",
+                    "classic": "Times New Roman",
+                    
+                    # --- 中文字体语义 (针对 Debian 环境常用) ---
+                    "chinese": "Noto Sans CJK SC",
+                    "heiti": "Noto Sans CJK SC",
+                    "songti": "Noto Serif CJK SC",
+                    "kaiti": "AR PL UKai CN",
+                    "microsoft yahei": "Microsoft YaHei",
+                    
+                    # --- 艺术/手写风格 ---
+                    "handwriting": "Comic Sans MS", # 虽然名声不好但很常用
+                    "elegant": "Apple Chancery",
+                    "title": "Linux Biolinum G"
+                }
+                
+                # 处理逻辑：
+                # 1. 尝试全字匹配字典（如 "serif"）
+                # 2. 尝试去掉空格后匹配（如 "sansserif"）
+                # 3. 如果都不匹配，直接使用原字符串（假设用户输入了具体的字体名如 "Arial"）
+                clean_name = font_name.lower().replace(" ", "").replace("-", "")
+                target_font = font_map.get(clean_name, font_name)
+                
+                # 设置三种字符集属性，确保兼容性
+                cursor.CharFontName = target_font          # 西文字体
+                cursor.CharFontNameAsian = target_font     # 中日韩字体
+                cursor.CharFontNameComplex = target_font   # 复杂文字（如阿拉伯语）
+                
+            except Exception as e:
+                log_to_console(f"Error setting font name: {e}")
 
     # ------------------------------------------------
     # 字体大小
@@ -320,6 +399,8 @@ def execute_format_request(format_request, fmt):
         # -------------------------
         "font_size": "set_font_size",
         "font_color": "set_font_color",
+        "font_name": "set_font_name",  # 新增
+        "font_family": "set_font_name", # 增加一个别名更稳妥
 
         # -------------------------
         # 高亮
@@ -354,28 +435,39 @@ def execute_format_request(format_request, fmt):
         fmt.goto_page(page_num)
 
         for line_key, line_value in page_value.items():
-
-            line_num = int(line_key.split("_")[1])
-            fmt.goto_line(line_num)
-            
-            cursor = fmt.goto_line(line_num)
-
-            for operation, value in line_value.items():
-                if operation in FORMAT_FUNCTION_MAP:
-                    func = getattr(fmt, FORMAT_FUNCTION_MAP[operation])
-
-    
-                    color_related_ops = ["font_color", "highlight", "underline"]
-                    
-                    if operation in color_related_ops and isinstance(value, str):
-                        # 确保转换成 LibreOffice 需要的 Long 类型
-                        value = fmt.parse_color(value)
-
-                    is_toggle = value in (True, None)
-                    if is_toggle:
-                        func(cursor)
+                    # 1. 确定 Cursor 范围
+                    if line_key == "line_all" or line_key == "all":
+                        # 获取整页 Cursor
+                        cursor = fmt.get_all_lines_cursor(page_num)
                     else:
-                        func(cursor, value)
+                        try:
+                            # 确保 line_1 这种格式能被正确解析
+                            line_num = int(line_key.split("_")[1])
+                            cursor = fmt.goto_line(line_num)
+                        except (ValueError, IndexError):
+                            log_to_console(f"Skipping invalid line key: {line_key}")
+                            continue
+
+                    # 2. 执行格式化操作 
+                    for operation, value in line_value.items():
+                        if operation in FORMAT_FUNCTION_MAP:
+                            # 动态获取 fmt 类中的方法
+                            func_name = FORMAT_FUNCTION_MAP[operation]
+                            func = getattr(fmt, func_name)
+                            
+                            # 3. 颜色预处理：如果是颜色相关操作，先转为 UNO 整数
+                            if operation in ["font_color", "highlight", "underline"]:
+                                value = fmt.parse_color(value)
+                            
+                            # 4. 调用函数
+                            try:
+                                # 兼容处理：有些函数可能不需要参数，有些需要 value
+                                if value is True and operation not in ["font_color", "highlight", "underline", "font_name", "font_size"]:
+                                    func(cursor) # 处理类似 set_bold 这种开关
+                                else:
+                                    func(cursor, value)
+                            except Exception as e:
+                                log_to_console(f"Error executing {operation} on {line_key}: {e}")
                         
   
 class MainJob(unohelper.Base, XJobExecutor):
@@ -600,7 +692,18 @@ class MainJob(unohelper.Base, XJobExecutor):
                    - 严禁在 JSON 顶层出现重复的键。
 
                 12. 强制 JSON 验证步骤 (Self-Correction)：
-                   - 在生成最终结果前，检查你的 JSON。如果发现类似 {"page_1": {...}, "page_1": {...}} 的结构，必须将其合并为 {"page_1":        {"line_1":...,"line_4":...}}。"""
+                   - 在生成最终结果前，检查你的 JSON。如果发现类似 {"page_1": {...}, "page_1": {...}} 的结构，必须将其合并为 {"page_1":        {"line_1":...,"line_4":...}}。
+                13. 字体名称规则 (font_name)：
+                
+                - 当用户提到特定字体或风格时使用。
+                - 示例：
+                  "改为微软雅黑" -> {"font_name": "Microsoft YaHei"}
+                  "使用等宽字体" -> {"font_name": "monospace"}
+                  "看起来更正式一点" -> {"font_name": "serif"}
+                 14. For 'whole page' or 'all text' requests, use 'line_all' as the key instead of listing lines individually.
+                 Example: {'page_1': {'line_all': {'font_name': 'SimHei'}}}"
+                  """
+                
         )
         # 2. 调用 Qwen 模型 (以 qwen-turbo 为例，也可根据需求换成 qwen-max)
         dashscope.api_key = api_key
