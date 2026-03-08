@@ -137,6 +137,13 @@ class Format:
         """
         return self.controller.getViewCursor()
         
+    def get_document_cursor(self):
+        """获取覆盖整个文档的 TextCursor"""
+        cursor = self.doc.Text.createTextCursor()
+        cursor.gotoStart(False) # 移动到起点
+        cursor.gotoEnd(True)   # 扩展选中到终点
+        return cursor
+        
     def get_all_lines_cursor(self, page_num):
         """
             获取指定页码整页内容的 Cursor
@@ -428,47 +435,58 @@ def execute_format_request(format_request, fmt):
         "clear_format": "clear_format"
     }
 
+    def apply_styles(target_cursor, styles_dict):
+            for operation, value in styles_dict.items():
+                if operation in FORMAT_FUNCTION_MAP:
+                    func_name = FORMAT_FUNCTION_MAP[operation]
+                    func = getattr(fmt, func_name)
+                    
+                    # 颜色转换
+                    if operation in ["font_color", "highlight", "underline"]:
+                        value = fmt.parse_color(value)
+                    
+                    try:
+                        # 调用函数
+                        if value is True and operation not in ["font_color", "highlight", "underline", "font_name", "font_size"]:
+                            func(target_cursor)
+                        else:
+                            func(target_cursor, value)
+                    except Exception as e:
+                        log_to_console(f"Error executing {operation}: {e}")
+                           
+
     for page_key, page_value in format_request.items():
+        # 1. --- 全篇处理逻辑 ---
+        if page_key in ["all_pages", "document", "entire_doc"]:
+            cursor = fmt.get_document_cursor() 
+            apply_styles(cursor, page_value)
+            continue
+            
+        # 2. --- 按页处理逻辑 ---
+        try:
+            # 这里的 split 可能会报错，加个保护
+            if "_" not in page_key: continue
+            page_num = int(page_key.split("_")[1])
+            fmt.goto_page(page_num)
 
-        page_num = int(page_key.split("_")[1])
+            # 注意：这里的循环必须在 try 块内或者紧跟其后
+            for line_key, line_value in page_value.items():
+                # 确定 Cursor 范围
+                if line_key in ["line_all", "all"]:
+                    cursor = fmt.get_all_lines_cursor(page_num)
+                else:
+                    try:
+                        line_num = int(line_key.split("_")[1])
+                        cursor = fmt.goto_line(line_num)
+                    except (ValueError, IndexError):
+                        continue
                 
-        fmt.goto_page(page_num)
+                # 应用样式
+                apply_styles(cursor, line_value)
 
-        for line_key, line_value in page_value.items():
-                    # 1. 确定 Cursor 范围
-                    if line_key == "line_all" or line_key == "all":
-                        # 获取整页 Cursor
-                        cursor = fmt.get_all_lines_cursor(page_num)
-                    else:
-                        try:
-                            # 确保 line_1 这种格式能被正确解析
-                            line_num = int(line_key.split("_")[1])
-                            cursor = fmt.goto_line(line_num)
-                        except (ValueError, IndexError):
-                            log_to_console(f"Skipping invalid line key: {line_key}")
-                            continue
-
-                    # 2. 执行格式化操作 
-                    for operation, value in line_value.items():
-                        if operation in FORMAT_FUNCTION_MAP:
-                            # 动态获取 fmt 类中的方法
-                            func_name = FORMAT_FUNCTION_MAP[operation]
-                            func = getattr(fmt, func_name)
+        except Exception as e:
+            log_to_console(f"Error processing page {page_key}: {e}")
                             
-                            # 3. 颜色预处理：如果是颜色相关操作，先转为 UNO 整数
-                            if operation in ["font_color", "highlight", "underline"]:
-                                value = fmt.parse_color(value)
-                            
-                            # 4. 调用函数
-                            try:
-                                # 兼容处理：有些函数可能不需要参数，有些需要 value
-                                if value is True and operation not in ["font_color", "highlight", "underline", "font_name", "font_size"]:
-                                    func(cursor) # 处理类似 set_bold 这种开关
-                                else:
-                                    func(cursor, value)
-                            except Exception as e:
-                                log_to_console(f"Error executing {operation} on {line_key}: {e}")
-                        
   
 class MainJob(unohelper.Base, XJobExecutor):
     def __init__(self, ctx):
@@ -554,154 +572,101 @@ class MainJob(unohelper.Base, XJobExecutor):
         
         # 1. 构造系统提示词，严格定义输出规范
         system_prompt = ("""
-                你是一个 LibreOffice Writer 文档格式解析器。
+                    # Role
+                                            你是一个专为 LibreOffice Writer 设计的格式化专家。你的任务是将用户的自然语言指令转化为精确的 JSON 格式化指令。
 
-                你的任务是把用户的自然语言编辑指令转换为结构化 JSON。
+                    # Output Format
+                                            你必须仅输出 JSON 格式，不要包含任何解释。结构如下：
+                                            {
+                                              "all_pages": { "属性": "值" },  // 用于全文操作
+                                              "page_n": {
+                                                "line_all": { "属性": "值" }, // 用于整页操作
+                                                "line_n": { "属性": "值" }    // 用于特定行操作
+                                              }
+                                            }
 
-                输出必须满足以下规则：
+                                            # Key Rules
+                                            1. 范围判定：
+                                               - 用户提到“全文”、“整篇”、“全部文档” -> 使用顶级键名 "all_pages"。
+                                               - 用户提到“整页”、“这页全部” -> 在对应页面下使用 "line_all"。
+                                               - 默认情况 -> 使用 "page_n" 和 "line_n"。
 
-                1. 输出必须是一个 **纯 JSON 对象**。
-                2. 不允许包含解释文字、Markdown、代码块或注释。
-                3. JSON 结构必须为：
+                                            2. 颜色规则 (font_color/highlight/underline)：
+                                               - 支持十六进制字符串（如 "FF5733"）。
+                                               - 支持语义颜色（如 "warning"->红色, "Tiffany Blue"->"0ABAB5", "Sakura Pink"->"FFB7C5"）。
 
-                {
-                  "page_n": {
-                    "line_m": {
-                      "property": value
-                    }
-                  }
-                }
+                                            3. 字体名称 (font_name)：
+                                               - 优先使用语义词：serif, sans-serif, monospace, code, formal, modern。
+                                               - 中文字体：使用 "heiti" (黑体), "songti" (宋体), "kaiti" (楷体)。
+                                               - 识别具体字体：如 "Arial", "Consolas", "Microsoft YaHei"。
+                                               
+                                            4.If the user specifies a color for a specific style (like underline), put that color code 
+                                            directly into that property instead of adding a highlight.”
+                                            5.# 属性赋值逻辑 (Strict Rules)
+                                                1. 样式属性 (bold, italic, underline)：
+                                                   - 默认情况下，如果用户未指定颜色，赋值为 true。
+                                                   - 如果用户明确指定了颜色（如 "Tiffany Blue" 下划线），则直接将颜色值赋给该属性，禁止生成 "true"。
+                                                   - 示例：
+                                                     "下划线" -> {"underline": true}
+                                                     "蓝色下划线" -> {"underline": "0000FF"}
 
-                其中：
+                                                2. 禁止冗余：
+                                                   - 禁止自行发明 "underline_color" 或类似的键名。
+                                                   - 禁止在用户只要求下划线时，脑补 "highlight"。
+                                                   
+                                            6.# Property Names (MUST MATCH BACKEND)
+                                                                                            你必须且仅能使用以下属性名：
+                                                        1. 样式类：
+                                                           - "bold": true/false
+                                                           - "italic": true/false
+                                                           - "underline": true 或 "颜色十六进制" (如果是特定颜色下划线，直接写颜色，禁止生成 true)
+                                                           - "clear_format": true (清除所有格式)
 
-                page_n = 页码，例如 page_1
-                line_m = 行号，例如 line_3
+                                                        2. 字体类：
+                                                           - "font_name": 语义词 (serif, heiti, songti, monospace, formal, modern)
+                                                           - "font_size": 数字 (如 12, 20)
+                                                           - "font_color": "颜色十六进制" (如 "FF0000")
 
-                4. 同一页的多个行必须合并在同一个 page 对象内，不能覆盖！Group instructions by page to avoid duplicate keys，例如：
+                                                        3. 高亮类：
+                                                           - "highlight": "颜色十六进制" (如 "FFFF00")
+                                                           - "remove_highlight": true
 
-                正确：
+                                                        4. 对齐类 (禁止使用 "alignment" 键)：
+                                                           - "align_center": true
+                                                           - "align_left": true
+                                                           - "align_right": true
+                                                           - "align_justify": true
+                                                   
+                                            7. 样式开关：
+                                               - bold, italic, underline 等属性使用 true/false。
 
-                {
-                  "page_1": {
-                    "line_1": {"bold": true},
-                    "line_4": {"highlight": true}
-                  }
-                }
+                                            # Examples
+                                            User: "全篇文字改成深蓝色，字号设为12"
+                                            Assistant: {
+                                              "all_pages": {
+                                                "font_color": "00008B",
+                                                "font_size": 12
+                                              }
+                                            }
 
-                错误（禁止重复 page_1）：
+                                            User: "第一页全部加粗，用黑体"
+                                            Assistant: {
+                                              "page_1": {
+                                                "line_all": {
+                                                  "bold": true,
+                                                  "font_name": "heiti"
+                                                }
+                                              }
+                                            }
 
-                {
-                  "page_1": {"line_1": {"bold": true}},
-                  "page_1": {"line_4": {"highlight": true}}
-                }
-
-                5. 支持的属性：
-                
-                font_size
-                font_color
-                font_name
-
-                align_center
-                align_left
-                align_right
-                align_justify
-                bold
-                italic
-                underline
-                highlight
-                insert_text
-                replace_selection
-                clear_format
-
-                6. 属性值规则 (highlight / underline / font_color)：
-
-                - 如果用户没有指定具体颜色：
-                                      使用 true（例如 {"highlight": true}），程序将应用默认值。
-
-                                    - 如果用户指定了具体颜色（无论是中文“天蓝色”、英文“cyan”、RGB 还是十六进制）：
-                                      你必须将其转换为标准的 6 位十六进制字符串（不带 # 号）。
-                                      例如：
-                                      输入 "红色" -> 输出 "FF0000"
-                                      输入 "light blue" -> 输出 "ADD8E6"
-                                      输入 "rgb(255, 0, 0)" -> 输出 "FF0000"
-                                      输入 "#00FF00" -> 输出 "00FF00"
-                                      如果你识别到品牌特定颜色（如 Tiffany Blue, Coca-Cola Red），请务必使用其公认的标准 Hex 代码（如 Tiffany Blue = 0ABAB5）
-
-                7. 组合逻辑示例：
-
-                                    输入：将第一页第二行设置为紫色高亮并加粗
-                                    输出：
-                                    {
-                                      "page_1": {
-                                        "line_2": {
-                                          "highlight": "800080",
-                                          "bold": true
-                                        }
-                                      }
-                                    }
-
-                8. 严禁事项：
-                - 严禁在 JSON 的颜色值中输出 "red"、"blue" 等单词。
-                - 必须统一输出 6 位十六进制（如 "FFFF00"），确保后端 parse_color 函数能直接转换。
-                10. 如果用户没有指定某个属性，不要推测。
-
-                ---
-
-                                示例
-
-                                输入：
-
-                                bold the first line of page 1 and highlight line 4 on page 1
-
-                                输出：
-
-                                {
-                                  "page_1": {
-                                    "line_1": {"bold": true},
-                                    "line_4": {"highlight": true}
-                                  }
-                                }
-
-                                输入：
-
-                                highlight line 2 of page 3 in yellow
-
-                                输出：
-
-                                {
-                                  "page_3": {
-                                    "line_2": {"highlight": "yellow"}
-                                  }
-                                }
-
-                                输入：
-
-                                red underline the first line on page 2
-
-                                输出：
-
-                                {
-                                  "page_2": {
-                                    "line_1": {"underline": "red"}
-                                  }
-                                }
-                
-                11. 聚合逻辑 (Aggregation Logic)：
-                   - 你必须维护一个全局字典对象。
-                   - 扫描用户的所有指令，如果多个指令属于同一个 `page_n`，你必须将它们合并。
-                   - 严禁在 JSON 顶层出现重复的键。
-
-                12. 强制 JSON 验证步骤 (Self-Correction)：
-                   - 在生成最终结果前，检查你的 JSON。如果发现类似 {"page_1": {...}, "page_1": {...}} 的结构，必须将其合并为 {"page_1":        {"line_1":...,"line_4":...}}。
-                13. 字体名称规则 (font_name)：
-                
-                - 当用户提到特定字体或风格时使用。
-                - 示例：
-                  "改为微软雅黑" -> {"font_name": "Microsoft YaHei"}
-                  "使用等宽字体" -> {"font_name": "monospace"}
-                  "看起来更正式一点" -> {"font_name": "serif"}
-                 14. For 'whole page' or 'all text' requests, use 'line_all' as the key instead of listing lines individually.
-                 Example: {'page_1': {'line_all': {'font_name': 'SimHei'}}}"
+                                            User: "把第二页第四行高亮设为樱花粉"
+                                            Assistant: {
+                                              "page_2": {
+                                                "line_4": {
+                                                  "highlight": "FFB7C5"
+                                                }
+                                              }
+                                            }
                   """
                 
         )
