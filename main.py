@@ -1,4 +1,5 @@
 import uno
+import re
 import unohelper
 import dashscope # 需安装：pip install dashscope
 from http import HTTPStatus
@@ -19,6 +20,11 @@ from com.sun.star.awt.FontUnderline import SINGLE
 from com.sun.star.style.ParagraphAdjust import CENTER, LEFT, RIGHT, BLOCK
 
 from com.sun.star.ui.dialogs.TemplateDescription import FILEOPEN_SIMPLE
+
+from com.sun.star.awt.MessageBoxButtons import BUTTONS_YES_NO
+from com.sun.star.awt.MessageBoxResults import YES
+
+
 
 def pick_writer_file(ctx):
 
@@ -72,44 +78,57 @@ def get_doc(ctx):
     return desktop.getCurrentComponent()
     
     
+
+        
 class Format:
 
-    def __init__(self, ctx):
+    def __init__(self, ctx, doc):
 
         self.ctx = ctx
-        self.doc = get_doc(ctx)
+        self.doc = doc
 
         if self.doc is None:
             raise RuntimeError("No active document")
 
         self.controller = self.doc.getCurrentController()
         
-    def get_cursor(self):
-        """
-                获取当前文本光标
-        """
-        return self.controller.getViewCursor()
-
-    def get_selection(self):
-        """
-        获取选中的文本对象
-        """
-        selection = self.controller.getSelection()
-        if selection.getCount() > 0:
-            return selection.getByIndex(0)
-        return None
         
-class Format:
 
-    def __init__(self, ctx):
+    def parse_color(self, color):
+        # 预定义的标准颜色映射（十进制数值）
+        colors = {
+            "yellow": 16776960,  # 0xFFFF00
+            "red":    16711680,  # 0xFF0000
+            "blue":   255,       # 0x0000FF
+            "green":  65280,     # 0x00FF00
+            "black":  0,
+            "white":  16777215   # 0xFFFFFF
+        }
 
-        self.ctx = ctx
-        self.doc = get_doc(ctx)
+        # 1. 处理空值或异常类型
+        if not color or not isinstance(color, str):
+            return colors["yellow"] # 默认回退颜色
 
-        if self.doc is None:
-            raise RuntimeError("No active document")
+        # 2. 预处理字符串：转小写、去空格、去首部 #
+        clean_color = str(color).lower().strip().lstrip('#')
 
-        self.controller = self.doc.getCurrentController()
+        # 3. 检查是否在预定义的颜色字典中
+        if clean_color in colors:
+            return colors[clean_color]
+
+        # 4. 增强：支持十六进制字符串解析 (例如 "FF0000" 或 "F00")
+        # 使用正则检查是否符合 3 位或 6 位十六进制格式
+        if re.fullmatch(r'[0-9a-f]{3}|[0-9a-f]{6}', clean_color):
+            try:
+                # 如果是 3 位简写 (如 F00 -> FF0000)
+                if len(clean_color) == 3:
+                    clean_color = ''.join([c*2 for c in clean_color])
+                return int(clean_color, 16)
+            except ValueError:
+                pass
+
+        # 5. 如果都匹配不上，返回默认颜色
+        return colors["yellow"]
         
     def get_cursor(self):
         """
@@ -159,9 +178,12 @@ class Format:
         cursor = cursor
         cursor.CharPosture = ITALIC
 
-    def set_underline(self,cursor):
-        cursor = cursor
-        cursor.CharUnderline = SINGLE
+    def set_underline(self, cursor, color=None):
+
+        cursor.CharUnderline = 1
+        cursor.CharUnderlineHasColor = True
+        if color:
+            cursor.CharUnderlineColor = self.parse_color(color)
 
     # ------------------------------------------------
     # 字体大小
@@ -188,20 +210,15 @@ class Format:
     # ------------------------------------------------
     # 高亮
     # ------------------------------------------------
-    def highlight(self, cursor, color):
-        if isinstance(color, str):
-            color = COLOR_MAP.get(color.lower(), 0xFFFF00)
+    def highlight(self, cursor, color=None):
 
-        # 移除这行：view_cursor = self.get_cursor() 
-        # 直接使用传入的 cursor。在 LibreOffice 中，TextCursor 已经包含了 Range 信息
-        
-        try:
-            # 确保 color 是整数
-            cursor.CharBackColor = int(color)
-            log_to_console(f"Highlight applied: {color}")
-        except Exception as e:
-            log_to_console(f"Highlight failed: {e}")
-        
+        if color is None or color is True:
+            color = "yellow"
+
+        uno_color = self.parse_color(color)
+
+        cursor.CharBackColor = uno_color
+            
 
     def remove_highlight(self,cursor):
         cursor = cursor
@@ -408,7 +425,8 @@ class MainJob(unohelper.Base, XJobExecutor):
         ("Gemini 3 Flash", "chat", "https://generativelanguage.googleapis.com/v1beta"),
         ("QWen", "chat", "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation"),
     ]
-
+    
+    @staticmethod
     def askQwen(query,api_key = "sk-f361ac282d2044d1a9523413ee925382"):
         """
     使用 Qwen 大模型将自然语言指令转换为 LibreOffice Writer 的结构化配置字典。
@@ -423,12 +441,147 @@ class MainJob(unohelper.Base, XJobExecutor):
         print(f"original query is :{query}")
         
         # 1. 构造系统提示词，严格定义输出规范
-        system_prompt = (
-            "你是一个专业的文书处理助手，负责将用户的自然语言指令转换为 LibreOffice Writer 的结构化 JSON 数据。"
-            "输出必须是一个纯 JSON 字典，不得包含任何解释性文字或 Markdown 代码块标记。"
-            "结构参考：{ \"page_n\": { \"line_m\": { \"property\": value } } }。"
-            "highlight color must be RGB integer,e.g.:yellow = 16776960"
-            "例如输入：'将第一页第一行进行黄色高亮'，输出：{\"page_1\": {\"line_1\": {\"highlight\": \"yellow\"}}}"
+        system_prompt = ("""
+                你是一个 LibreOffice Writer 文档格式解析器。
+
+                你的任务是把用户的自然语言编辑指令转换为结构化 JSON。
+
+                输出必须满足以下规则：
+
+                1. 输出必须是一个 **纯 JSON 对象**。
+                2. 不允许包含解释文字、Markdown、代码块或注释。
+                3. JSON 结构必须为：
+
+                {
+                  "page_n": {
+                    "line_m": {
+                      "property": value
+                    }
+                  }
+                }
+
+                其中：
+
+                page_n = 页码，例如 page_1
+                line_m = 行号，例如 line_3
+
+                4. 同一页的多个行必须合并在同一个 page 对象内，不能覆盖！Group instructions by page to avoid duplicate keys，例如：
+
+                正确：
+
+                {
+                  "page_1": {
+                    "line_1": {"bold": true},
+                    "line_4": {"highlight": true}
+                  }
+                }
+
+                错误（禁止重复 page_1）：
+
+                {
+                  "page_1": {"line_1": {"bold": true}},
+                  "page_1": {"line_4": {"highlight": true}}
+                }
+
+                5. 支持的属性：
+
+                bold
+                italic
+                underline
+                highlight
+
+                6. 属性值规则：
+
+                bold → true
+                italic → true
+                underline → true 或颜色字符串
+
+                highlight：
+
+                如果用户没有指定颜色：
+
+                "highlight": true
+
+                如果用户指定颜色：
+
+                "highlight": "color"
+
+                例如：
+
+                yellow
+                red
+                blue
+                green
+
+                7. underline 颜色规则：
+
+                如果用户指定颜色：
+
+                "underline": "red"
+
+                如果没有指定：
+
+                "underline": true
+
+                8. highlight 颜色对应 RGB（仅供参考，不需要输出 RGB）：
+
+                yellow = 16776960
+                red = 16711680
+                blue = 255
+                green = 65280
+
+                9. 只在用户明确提到颜色时才输出颜色。
+
+                10. 如果用户没有指定某个属性，不要推测。
+
+                ---
+
+                示例
+
+                输入：
+
+                bold the first line of page 1 and highlight line 4 on page 1
+
+                输出：
+
+                {
+                  "page_1": {
+                    "line_1": {"bold": true},
+                    "line_4": {"highlight": true}
+                  }
+                }
+
+                输入：
+
+                highlight line 2 of page 3 in yellow
+
+                输出：
+
+                {
+                  "page_3": {
+                    "line_2": {"highlight": "yellow"}
+                  }
+                }
+
+                输入：
+
+                red underline the first line on page 2
+
+                输出：
+
+                {
+                  "page_2": {
+                    "line_1": {"underline": "red"}
+                  }
+                }
+                
+                11. 聚合逻辑 (Aggregation Logic)：
+                   - 你必须维护一个全局字典对象。
+                   - 扫描用户的所有指令，如果多个指令属于同一个 `page_n`，你必须将它们合并。
+                   - 严禁在 JSON 顶层出现重复的键。
+
+                12. 强制 JSON 验证步骤 (Self-Correction)：
+                   - 在生成最终结果前，检查你的 JSON。如果发现类似 {"page_1": {...}, "page_1": {...}} 的结构，必须将其合并为 {"page_1":        {"line_1":...,"line_4":...}}。"""
         )
         # 2. 调用 Qwen 模型 (以 qwen-turbo 为例，也可根据需求换成 qwen-max)
         dashscope.api_key = api_key
@@ -449,13 +602,18 @@ class MainJob(unohelper.Base, XJobExecutor):
             content = response.output.choices[0].message.content
             print(f"content:{content}")
             try:
-                # 清理可能存在的 Markdown 标签并解析为字典
+                # 1. 清理字符串
                 clean_json = content.replace("```json", "").replace("```", "").strip()
-                print(f"structured query:{json.loads(clean_json)}")
-                return json.loads(clean_json)
-            except (json.JSONDecodeError, ValueError) as e:
-                print(f"解析 JSON 失败: {e}，原始输出: {content}")
-                return {}
+                
+                # 2. 只解析一次并存储在变量中
+                data = json.loads(clean_json)
+                
+                # 3. 打印并返回
+                log_to_console(f"Structured query: {data}")
+                return data
+            except Exception as e:
+                log_to_console(f"JSON Parsing Error: {e}")
+                return None
         else:
             print(f"API 请求失败: {response.code} - {response.message}")
             return {}     
@@ -643,6 +801,9 @@ class MainJob(unohelper.Base, XJobExecutor):
 
 
     def trigger(self, args):
+        BUTTONS_YES_NO = uno.getConstantByName("com.sun.star.awt.MessageBoxButtons.BUTTONS_YES_NO")
+        YES = uno.getConstantByName("com.sun.star.awt.MessageBoxResults.YES")
+        
         log_to_console(f"\n--- Trigger called with args: {args} ---")
 
         if args == "setting":
@@ -656,51 +817,73 @@ class MainJob(unohelper.Base, XJobExecutor):
                 traceback.print_exc(file=sys.stderr)
         
         elif args == "format":
-
             log_to_console("Entering format branch...")
-
             try:
-
-                file_url = pick_writer_file(self.ctx)
-
-                if not file_url:
-                    log_to_console("No file selected.")
-                    return
-
-                model = self.desktop.loadComponentFromURL(
-                    file_url,
-                    "_blank",
-                    0,
-                    ()
+                # 1. Initialize UNO environment
+                smgr = self.ctx.getServiceManager() # 建议使用 self.ctx
+                desktop = smgr.createInstanceWithContext("com.sun.star.frame.Desktop", self.ctx)
+                
+                # 2. Ask user for the source document
+                active_frame = desktop.getCurrentFrame()
+                parent_window = active_frame.getContainerWindow() if active_frame else None
+                
+                msg_box = smgr.createInstanceWithContext("com.sun.star.awt.Toolkit", self.ctx).createMessageBox(
+                    parent_window, 
+                    "querybox", 
+                    BUTTONS_YES_NO, 
+                    "AI Formatter", 
+                    "Would you like to format the CURRENTLY active document?\n\n(Select 'No' to pick a different file.)"
                 )
+                
+                choice = msg_box.execute()
+                target_doc = None
 
-                if not model.supportsService("com.sun.star.text.TextDocument"):
-                    log_to_console("Not a Writer document.")
+                if choice == YES:
+                    target_doc = desktop.getCurrentComponent()
+                    log_to_console("Mode: Processing active document.")
+                else:
+                    file_url = pick_writer_file(self.ctx)
+                    if file_url:
+                        # Open the selected file
+                        target_doc = desktop.loadComponentFromURL(file_url, "_blank", 0, ())
+                        log_to_console(f"Mode: Opened new document {file_url}")
+                    else:
+                        log_to_console("User cancelled file selection.")
+                        return # Exit gracefully
+
+                # 3. Validation: Ensure it's a Writer document
+                if not target_doc or not hasattr(target_doc, "supportsService") or \
+                   not target_doc.supportsService("com.sun.star.text.TextDocument"):
+                    log_to_console("Error: Selected component is not a Writer document.")
                     return
 
+                # 4. Get User Input for AI
                 user_input = self.input_box(
                     "Document Format:",
                     "AI Formatter",
-                    "example: highlight first line"
+                    "Example: Bold all headings or highlight keywords."
                 )
 
                 if not user_input:
+                    log_to_console("User cancelled input.")
                     return
 
+                # 5. AI Process & Execution
+                # Note: Passing target_doc to your formatting logic is CRITICAL
                 format_request = MainJob.askQwen(user_input)
-
-                fmt = Format(self.ctx)
-
+                
+                # Make sure your Format class is initialized with the CORRECT doc
+                fmt = Format(self.ctx, target_doc) 
+                
                 execute_format_request(format_request, fmt)
 
-                log_to_console("Formatting completed.")
+                log_to_console("Formatting completed successfully.")
 
             except Exception as e:
-
                 log_to_console("--- EXCEPTION in trigger(format) ---")
-                log_to_console(e)
+                log_to_console(str(e))
                 traceback.print_exc(file=sys.stderr)
-
+                
 g_ImplementationHelper = unohelper.ImplementationHelper()
 g_ImplementationHelper.addImplementation(
     MainJob,
