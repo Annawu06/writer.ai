@@ -16,7 +16,7 @@ from com.sun.star.util.MeasureUnit import TWIP
 
 from com.sun.star.awt.FontWeight import BOLD
 from com.sun.star.awt.FontSlant import ITALIC
-from com.sun.star.awt.FontUnderline import SINGLE
+from com.sun.star.awt import FontUnderline
 from com.sun.star.style.ParagraphAdjust import LEFT, RIGHT, CENTER, BLOCK
 
 from com.sun.star.ui.dialogs.TemplateDescription import FILEOPEN_SIMPLE
@@ -211,12 +211,47 @@ class Format:
         cursor = cursor
         cursor.CharPosture = ITALIC
 
-    def set_underline(self, cursor, color=None):
+    def set_underline(self, cursor, value):
+        try:
+            print(f"value:{value}")
+            # 确保是字符串并去掉空格
+            val_str = str(value).strip()
+            print(f"val_str{val_str}")
+            style_part = "1" # 默认单线
+            color_part = None
 
-        cursor.CharUnderline = 1
-        cursor.CharUnderlineHasColor = True
-        if color:
-            cursor.CharUnderlineColor = self.parse_color(color)
+            # --- 核心逻辑：根据长度拆分 ---
+            if len(val_str) >= 7:
+                # 只有长度足够长，才认为是 [样式]+[6位颜色]
+                style_part = val_str[:-6]
+                color_part = val_str[-6:]
+            elif len(val_str) > 0:
+                # 长度短，说明只有样式代码
+                style_part = val_str
+                color_part = None
+            
+            # --- 赋值样式 ---
+            # 必须转为 int，LibreOffice 才能识别
+            try:
+                style_int = int(style_part)
+                # 安全过滤：确保样式在 0-18 之间
+                cursor.CharUnderline = style_int if 0 <= style_int <= 18 else 1
+            except ValueError:
+                cursor.CharUnderline = 1
+
+            # --- 赋值颜色 ---
+            if color_part:
+                cursor.CharUnderlineHasColor = True
+                cursor.CharUnderlineColor = int(color_part, 16)
+            else:
+                # 重要：没有颜色时，必须设为 False 以跟随字体颜色
+                cursor.CharUnderlineHasColor = False
+
+            print(f"Fixed Debug - Raw: {val_str}, Style: {cursor.CharUnderline}, HasColor: {cursor.CharUnderlineHasColor}")
+
+        except Exception as e:
+            print(f"Critical Underline Error: {e}")
+            cursor.CharUnderline = 0
 
 
 
@@ -442,12 +477,13 @@ def execute_format_request(format_request, fmt):
                     func = getattr(fmt, func_name)
                     
                     # 颜色转换
-                    if operation in ["font_color", "highlight", "underline"]:
+                    if operation in ["font_color", "highlight"]:
                         value = fmt.parse_color(value)
+            
                     
                     try:
                         # 调用函数
-                        if value is True and operation not in ["font_color", "highlight", "underline", "font_name", "font_size"]:
+                        if value is True and operation not in ["font_color", "highlight", "font_name", "font_size"]:
                             func(target_cursor)
                         else:
                             func(target_cursor, value)
@@ -617,13 +653,27 @@ class MainJob(unohelper.Base, XJobExecutor):
                                                
                                             4.If the user specifies a color for a specific style (like underline), put that color code 
                                             directly into that property instead of adding a highlight.”
-                                            5.# 属性赋值逻辑 (Strict Rules)
-                                                1. 样式属性 (bold, italic, underline)：
-                                                   - 默认情况下，如果用户未指定颜色，赋值为 true。
-                                                   - 如果用户明确指定了颜色（如 "Tiffany Blue" 下划线），则直接将颜色值赋给该属性，禁止生成 "true"。
-                                                   - 示例：
-                                                     "下划线" -> {"underline": true}
-                                                     "蓝色下划线" -> {"underline": "0000FF"}
+                                            5. 属性赋值逻辑 (Strict Rules)
+                                                1. 下划线属性 (underline) 的复合构造：
+                                                                                                    格式： underline 的值必须遵循 [样式代码][颜色] 的格式。
+                                                  CharUnderline style mapping: {0:NONE,1:SINGLE,2:DOUBLE,3:DOTTED,5:DASH,6:LONG_DASH,7:DASH_DOT,8:DASH_DOT_DOT,9:SMALL_WAVE,10:WAVE,11:DOUBLE_WAVE,12:BOLD,13:BOLD_DOTTED,14:BOLD_DASH,15:BOLD_LONG_DASH,16:BOLD_DASH_DOT,17:BOLD_DASH_DOT_DOT,18:BOLD_WAVE}
+                                                                                                    赋值逻辑：
+                                                                                                    默认/跟随颜色： >    - 如果用户只说“下划线”或“波浪线下划线”，而不提具体颜色，underline 仅输出样式代码     （如 "1" 或 "10"）。 逻辑语义： 此时程序应将 CharUnderlineHasColor 设为 False
+                                                Underline styles are single atomic values. 
+                                                Interpret the following phrases strictly as underline types rather than font weight combinations:
+                                                bold wave underline = CharUnderline 18
+                                                bold dotted underline = CharUnderline 13
+                                                bold dash underline = CharUnderline 14
+                                                bold dash dot underline = CharUnderline 16
+
+                                                Do not split "bold" into font weight when it appears inside underline style names.
+                                                                                                    如果用户指定了款式（如“波浪线”）：赋值为样式代码，如 10。
+                                                                                                    如果用户指定了颜色（如“蓝色下划线”）：赋值为 10000FF（1是单线，0000FF是颜色）。
+                                                                                                    如果用户同时指定款式和颜色（如“红色双下划线”）：赋值为 2FF0000（2是双线，FF0000是红色）。
+                                                                                                    示例：
+                                                        “波浪线” -> {"underline": "10"}
+                                                        “红色下划线” -> {"underline": "1FF0000"}
+                                                        “绿色双下划线” -> {"underline": "200FF00"}
 
                                                 2. 禁止冗余：
                                                    - 禁止自行发明 "underline_color" 或类似的键名。
