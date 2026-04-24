@@ -29,7 +29,7 @@ from com.sun.star.awt.FontSlant import NONE
 from com.sun.star.awt.FontUnderline import NONE as UNDERLINE_NONE
 
 
-
+# select file to format
 def pick_writer_file(ctx):
 
     smgr = ctx.getServiceManager()
@@ -43,7 +43,6 @@ def pick_writer_file(ctx):
 
     file_picker.setTitle("Select Writer Document")
 
-    # 文件过滤器
     file_picker.appendFilter("Writer Documents", "*.odt;*.docx;*.doc")
     file_picker.setCurrentFilter("Writer Documents")
 
@@ -58,8 +57,6 @@ def pick_writer_file(ctx):
 # Helper for debugging
 def log_to_console(*args):
     """Prints messages to the console for debugging."""
-    # In the LibreOffice Python context, print often goes to a specific log file.
-    # Writing to stderr is sometimes more reliable for seeing output in a console.
     print(*args, file=sys.stderr)
     sys.stderr.flush()
 
@@ -71,9 +68,7 @@ def get_doc(ctx):
     )
     return desktop.getCurrentComponent()
     
-    
-
-        
+       
 class Format:
 
     def __init__(self, ctx, doc):
@@ -89,8 +84,7 @@ class Format:
         
 
     def parse_color(self, color):
-        # 1. 扩展的标准 Web 颜色映射 (常用部分，你可以根据需要继续增加)
-        # 提示：LibreOffice 的颜色是 Long 类型，即 R*65536 + G*256 + B
+        # R*65536 + G*256 + B
         if isinstance(color, int):
             return color
         std_colors = {
@@ -103,22 +97,18 @@ class Format:
             "cyan": 0x00FFFF, "magenta": 0xFF00FF,"tiffanyblue": 0x0ABAB5
         }
 
-    # 处理 True (AI表示“默认高亮”)
+        # process highlight is true
         if color is True:
             return std_colors["yellow"]
         
         if not color or not isinstance(color, str):
             return std_colors["yellow"]
 
-        # 2. 预处理：【关键】除了转小写，还要去掉空格
-        # 这样 "Dark Red" 会变成 "darkred"，就能匹配字典了
         clean_color = color.lower().replace(" ", "").strip().lstrip('#')
 
-        # 3. 尝试从字典匹配
         if clean_color in std_colors:
             return std_colors[clean_color]
 
-        # 4. 尝试十六进制匹配 (处理 AI 给出的 "B2C8D9")
         if re.fullmatch(r'[0-9a-f]{3}|[0-9a-f]{6}', clean_color):
             try:
                 if len(clean_color) == 3:
@@ -127,47 +117,41 @@ class Format:
             except ValueError:
                 pass
 
-        # 5. 保底：建议改成紫色 0x800080。
-        # 如果运行后看到紫色，说明输入的颜色既不在字典里，也不是合法的十六进制。
         return std_colors["yellow"]
         
     def get_cursor(self):
-        """
-            获取当前文本光标
-        """
+
         return self.controller.getViewCursor()
         
     def get_document_cursor(self):
-        """获取覆盖整个文档的 TextCursor"""
+        """obtain TextCursor"""
         cursor = self.doc.Text.createTextCursor()
-        cursor.gotoStart(False) # 移动到起点
-        cursor.gotoEnd(True)   # 扩展选中到终点
+        cursor.gotoStart(False) 
+        cursor.gotoEnd(True)  
         return cursor
         
     def get_all_lines_cursor(self, page_num):
-        """
-            获取指定页码整页内容的 Cursor
-        """
+
         try:
-            # 1. 先跳转到该页
+            # 1. go to page 
             self.goto_page(page_num)
             view_cursor = self.doc.CurrentController.getViewCursor()
             
-            # 2. 移动到该页开头
+            # 2. move to the start of the page
             view_cursor.jumpToStartOfPage()
             start_range = view_cursor.getStart()
             
-            # 3. 移动到该页结尾
+            # 3. move to the end of the page
             view_cursor.jumpToEndOfPage()
             end_range = view_cursor.getEnd()
             
-            # 4. 创建一个包含整个页面的 TextCursor
+            # 4. create a TextCursor
             cursor = self.doc.Text.createTextCursorByRange(start_range)
-            cursor.gotoRange(end_range, True) # True 表示“扩展选中”
+            cursor.gotoRange(end_range, True)
             return cursor
         except Exception as e:
             log_to_console(f"Error creating page cursor: {e}")
-            return self.doc.Text.createTextCursor() # 出错则返回普通 cursor 兜底
+            return self.doc.Text.createTextCursor()
 
     def get_selection(self):
         """
@@ -181,14 +165,11 @@ class Format:
     def goto_page(self, page):
         view_cursor = self.get_cursor()
         view_cursor.jumpToPage(page)
-        view_cursor.jumpToStartOfPage() # 确保在页首
+        view_cursor.jumpToStartOfPage() 
 
     def goto_line(self, line):
         view_cursor = self.get_cursor()
-        # 创建一个锚定在当前 ViewCursor 位置的逻辑光标
         cursor = self.doc.Text.createTextCursorByRange(view_cursor.getStart())
-        
-        # 向下移动 (line-1) 次
         for _ in range(line - 1):
             if not cursor.gotoNextParagraph(False):
                 break
@@ -196,55 +177,82 @@ class Format:
         cursor.gotoStartOfParagraph(False)
         cursor.gotoEndOfParagraph(True)
         return cursor
+        
+        
+    def find_paragraphs_by_styles(doc, target_styles=None):
+        """
+        输入:
+            doc: LibreOffice 文档对象 (XComponent)
+            target_styles: 想要匹配的样式名称列表 (list)
+        输出:
+            matches: 包含匹配段落对象的列表
+        """
+        if target_styles is None:
+            target_styles = ["Title", "Subtitle", "Text body"] 
+            target_styles.extend([f"Heading {i}" for i in range(1, 11)])
+
+        matches = []
+        
+        # 遍历文档中的所有内容
+        paragraphs = doc.Text.createEnumeration()
+        
+        while paragraphs.hasMoreElements():
+            para = paragraphs.nextElement()
+
+            # 确保当前元素是一个段落（过滤掉表格等其他对象）
+            if para.supportsService("com.sun.star.text.Paragraph"):
+                # 检查段落样式是否在目标列表中
+                if para.ParaStyleName in target_styles:
+                    matches.append({
+                        "style": para.ParaStyleName,
+                        "text": para.String,
+                        "object": para  
+                    })
+                    
+
+        return matches
 
 
 
     # ------------------------------------------------
-    # 文本样式
+    # Text Style
     # ------------------------------------------------
 
-    def set_bold(self,cursor):
+    def set_bold(self,cursor, value=True):
         cursor = cursor
         cursor.CharWeight = BOLD
 
-    def set_italic(self,cursor):
+    def set_italic(self,cursor, value=True):
         cursor = cursor
         cursor.CharPosture = ITALIC
 
     def set_underline(self, cursor, value):
         try:
             print(f"value:{value}")
-            # 确保是字符串并去掉空格
+
             val_str = str(value).strip()
             print(f"val_str{val_str}")
-            style_part = "1" # 默认单线
+            style_part = "1"
             color_part = None
 
-            # --- 核心逻辑：根据长度拆分 ---
+  
             if len(val_str) >= 7:
-                # 只有长度足够长，才认为是 [样式]+[6位颜色]
                 style_part = val_str[:-6]
                 color_part = val_str[-6:]
             elif len(val_str) > 0:
-                # 长度短，说明只有样式代码
                 style_part = val_str
                 color_part = None
             
-            # --- 赋值样式 ---
-            # 必须转为 int，LibreOffice 才能识别
             try:
                 style_int = int(style_part)
-                # 安全过滤：确保样式在 0-18 之间
                 cursor.CharUnderline = style_int if 0 <= style_int <= 18 else 1
             except ValueError:
                 cursor.CharUnderline = 1
 
-            # --- 赋值颜色 ---
             if color_part:
                 cursor.CharUnderlineHasColor = True
                 cursor.CharUnderlineColor = int(color_part, 16)
             else:
-                # 重要：没有颜色时，必须设为 False 以跟随字体颜色
                 cursor.CharUnderlineHasColor = False
 
             print(f"Fixed Debug - Raw: {val_str}, Style: {cursor.CharUnderline}, HasColor: {cursor.CharUnderlineHasColor}")
@@ -254,13 +262,11 @@ class Format:
             cursor.CharUnderline = 0
 
 
-
     def set_font_name(self, cursor, font_name):
             try:
                 if not font_name or not isinstance(font_name, str):
                     return
-                
-                # 扩展语义映射：将 AI 的描述性词汇映射到 LibreOffice 常用字体
+
                 font_map = {
                     # --- 基础类别 ---
                     "serif": "Libre Serif",
@@ -268,48 +274,38 @@ class Format:
                     "monospace": "Liberation Mono",
                     "code": "Consolas",
                     
-                    # --- 现代/简约风格 ---
                     "modern": "Noto Sans",
                     "clean": "DejaVu Sans",
                     "minimal": "Inter",
                     
-                    # --- 正式/学术风格 ---
                     "formal": "Libre Baskerville",
                     "academic": "Linux Libertine G",
                     "professional": "Liberation Serif",
                     "classic": "Times New Roman",
                     
-                    # --- 中文字体语义 (针对 Debian 环境常用) ---
                     "chinese": "Noto Sans CJK SC",
                     "heiti": "Noto Sans CJK SC",
                     "songti": "Noto Serif CJK SC",
                     "kaiti": "AR PL UKai CN",
                     "microsoft yahei": "Microsoft YaHei",
                     
-                    # --- 艺术/手写风格 ---
-                    "handwriting": "Comic Sans MS", # 虽然名声不好但很常用
+                    "handwriting": "Comic Sans MS", 
                     "elegant": "Apple Chancery",
                     "title": "Linux Biolinum G"
                 }
                 
-                # 处理逻辑：
-                # 1. 尝试全字匹配字典（如 "serif"）
-                # 2. 尝试去掉空格后匹配（如 "sansserif"）
-                # 3. 如果都不匹配，直接使用原字符串（假设用户输入了具体的字体名如 "Arial"）
+
                 clean_name = font_name.lower().replace(" ", "").replace("-", "")
                 target_font = font_map.get(clean_name, font_name)
                 
-                # 设置三种字符集属性，确保兼容性
-                cursor.CharFontName = target_font          # 西文字体
-                cursor.CharFontNameAsian = target_font     # 中日韩字体
-                cursor.CharFontNameComplex = target_font   # 复杂文字（如阿拉伯语）
+                cursor.CharFontName = target_font          
+                cursor.CharFontNameAsian = target_font     
+                cursor.CharFontNameComplex = target_font   
                 
             except Exception as e:
                 log_to_console(f"Error setting font name: {e}")
 
-    # ------------------------------------------------
-    # 字体大小
-    # ------------------------------------------------
+
 
     def set_font_size(self, cursor, size):
         size = float(size)
@@ -317,13 +313,9 @@ class Format:
         cursor.CharHeight = size
         cursor.CharHeightAsian = size
 
-    # ------------------------------------------------
-    # 字体颜色
-    # ------------------------------------------------
 
     def set_font_color(self, cursor, rgb):
         try:
-            # 如果漏网之鱼是字符串，这里做最后一次转换
             if isinstance(rgb, str):
                 rgb = self.parse_color(rgb)
             
@@ -331,9 +323,7 @@ class Format:
         except Exception as e:
             log_to_console(f"Error setting color: {e}")
 
-    # ------------------------------------------------
-    # 高亮
-    # ------------------------------------------------
+
     def highlight(self, cursor, color=None):
 
         if color is None or color is True:
@@ -348,10 +338,10 @@ class Format:
         cursor = cursor
         cursor.CharBackColor = -1
 
-    # ------------------------------------------------
-    # 段落对齐
-    # ------------------------------------------------
 
+    # ------------------------------------------------
+    # Paragraph Align
+    # ------------------------------------------------
 
     def align_center(self, cursor):
 
@@ -376,37 +366,65 @@ class Format:
         cursor.ParaAdjust = BLOCK
 
     # ------------------------------------------------
-    # 插入文本
+    # Text insert and replace
     # ------------------------------------------------
 
-    def insert_text(self, cursor,text):
-        cursor = cursor
-        cursor.setString(cursor.getString() + text)
+    def get_selection_cursor(self):
+            """
+            获取当前文档中用户实际选中的范围。
+            """
+            try:
+                # 修复点：将 self.target_doc 改为 self.doc
+                selection = self.doc.getCurrentController().getSelection()
+                if selection and selection.getCount() > 0:
+                    selected_range = selection.getByIndex(0)
+                    return self.doc.Text.createTextCursorByRange(selected_range)
+            except Exception as e:
+                log_to_console(f"Error getting selection cursor: {e}")
+            
+            # 修复点：确保这里也使用 self.doc 或调用已有的获取全篇游标的方法
+            return self.get_document_cursor()
 
-    # ------------------------------------------------
-    # 替换选中文本
-    # ------------------------------------------------
+    def insert_text_at_cursor(self, cursor, text, insert_before=True):
+        """
+        在光标当前位置插入文本。
+        """
+        try:
+            # 获取文本对象（XText）
+            text_obj = cursor.getText()
+            
+            if insert_before:
+                # 折叠到开始位置
+                cursor.collapseToStart()
+            else:
+                # 折叠到结束位置
+                cursor.collapseToEnd()
+            
+            # 使用 insertString 明确执行“插入”动作
+            # 参数2: 要插入的字符串
+            # 参数3: 是否替换当前选区 (False 表示不替换，即插入)
+            text_obj.insertString(cursor, text, False)
+            
+            # 插入后，建议再次 collapseToEnd，防止后续指令误伤新插入的文本
+            cursor.collapseToEnd()
+            
+        except Exception as e:
+            log_to_console(f"Error in insert_text_at_cursor: {e}")
 
-    def replace_selection(self, cursor,text):
-        selection = self.get_selection()
-        if selection:
-            selection.setString(text)
 
-    # ------------------------------------------------
-    # 获取当前文本
-    # ------------------------------------------------
+    def replace_selection(self, cursor, text):
+        try:
+            if cursor:
+                # 这里的逻辑不需要 doc，直接操作 cursor 即可
+                cursor.setString(text)
+        except Exception as e:
+            log_to_console(f"Error in replace_selection: {e}")
 
-    def get_selected_text(self,cursor):
-        selection = cursor
-        if selection:
-            return selection.getString()
+    # 确保这个函数和 replace_selection 对齐
+    def get_selected_text(self, cursor):
+        if cursor:
+            return cursor.getString()
         return ""
-
-    # ------------------------------------------------
-    # 清除所有格式
-    # ------------------------------------------------
-
-
 
     def clear_format(self, cursor):
 
@@ -422,92 +440,40 @@ class Format:
         cursor.CharHeight = 12
             
         
-
     
   
 def execute_format_request(format_request, fmt):
-
-    FORMAT_FUNCTION_MAP = {
-
-        # -------------------------
-        # 文本样式
-        # -------------------------
-        "bold": "set_bold",
-        "italic": "set_italic",
-        "underline": "set_underline",
-
-        # -------------------------
-        # 字体
-        # -------------------------
-        "font_size": "set_font_size",
-        "font_color": "set_font_color",
-        "font_name": "set_font_name",  # 新增
-        "font_family": "set_font_name", # 增加一个别名更稳妥
-
-        # -------------------------
-        # 高亮
-        # -------------------------
-        "highlight": "highlight",
-        "remove_highlight": "remove_highlight",
-
-        # -------------------------
-        # 段落对齐
-        # -------------------------
-        "align_center": "align_center",
-        "align_left": "align_left",
-        "align_right": "align_right",
-        "align_justify": "align_justify",
-
-        # -------------------------
-        # 文本操作
-        # -------------------------
-        "insert_text": "insert_text",
-        "replace_selection": "replace_selection",
-
-        # -------------------------
-        # 文档工具
-        # -------------------------
-        "clear_format": "clear_format"
-    }
-
-    def apply_styles(target_cursor, styles_dict):
-            for operation, value in styles_dict.items():
-                if operation in FORMAT_FUNCTION_MAP:
-                    func_name = FORMAT_FUNCTION_MAP[operation]
-                    func = getattr(fmt, func_name)
-                    
-                    # 颜色转换
-                    if operation in ["font_color", "highlight"]:
-                        value = fmt.parse_color(value)
-            
-                    
-                    try:
-                        # 调用函数
-                        if value is True and operation not in ["font_color", "highlight", "font_name", "font_size"]:
-                            func(target_cursor)
-                        else:
-                            func(target_cursor, value)
-                    except Exception as e:
-                        log_to_console(f"Error executing {operation}: {e}")
-                           
+    if not format_request:
+        return
 
     for page_key, page_value in format_request.items():
-        # 1. --- 全篇处理逻辑 ---
+        # --- 核心修改点 ---
+        # 如果 key 是 selection，或者 page_value 包含特定指示
+        if page_key == "selection":
+            cursor = fmt.get_selection_cursor() # 你需要在 Format 类实现这个方法
+            apply_styles(fmt, cursor, page_value)
+            continue
+
         if page_key in ["all_pages", "document", "entire_doc"]:
-            cursor = fmt.get_document_cursor() 
-            apply_styles(cursor, page_value)
+            # 如果 AI 脑抽在 all_pages 里提到了 selection，优先处理选区
+            if "selection" in str(page_value).lower():
+                cursor = fmt.get_selection_cursor()
+            else:
+                cursor = fmt.get_document_cursor()
+            
+            apply_styles(fmt, cursor, page_value)
             continue
             
-        # 2. --- 按页处理逻辑 ---
+        # 2. 按页处理逻辑 (page_n)
         try:
-            # 这里的 split 可能会报错，加个保护
-            if "_" not in page_key: continue
+            if "_" not in page_key:
+                continue
+                
             page_num = int(page_key.split("_")[1])
             fmt.goto_page(page_num)
 
-            # 注意：这里的循环必须在 try 块内或者紧跟其后
             for line_key, line_value in page_value.items():
-                # 确定 Cursor 范围
+                # 确定每一行的 Cursor 范围
                 if line_key in ["line_all", "all"]:
                     cursor = fmt.get_all_lines_cursor(page_num)
                 else:
@@ -517,13 +483,81 @@ def execute_format_request(format_request, fmt):
                     except (ValueError, IndexError):
                         continue
                 
-                # 应用样式
-                apply_styles(cursor, line_value)
+                # 调用具体的样式应用函数
+                apply_styles(fmt, cursor, line_style_dict=line_value)
 
         except Exception as e:
             log_to_console(f"Error processing page {page_key}: {e}")
-                            
-  
+            
+            
+def apply_styles(fmt_instance, target_cursor, line_style_dict):
+    """
+    在指定的 cursor 上应用具体的样式属性
+    :param fmt_instance: Format 类的实例 (用于调用 set_bold 等方法)
+    :param target_cursor: 当前操作的 LibreOffice TextCursor 对象
+    :param line_style_dict: 具体的样式字典, 如 {"bold": true, "font_color": "FF0000"}
+    """
+    # 建立指令与类方法的映射映射
+    FORMAT_FUNCTION_MAP = {
+        "bold": "set_bold",
+        "italic": "set_italic",
+        "underline": "set_underline",
+        "font_size": "set_font_size",
+        "font_color": "set_font_color",
+        "font_name": "set_font_name",  
+        "font_family": "set_font_name", 
+        "highlight": "highlight",
+        "remove_highlight": "remove_highlight",
+        "align_center": "align_center",
+        "align_left": "align_left",
+        "align_right": "align_right",
+        "align_justify": "align_justify",
+        "replace_text": "replace_selection",
+        "insert_text": "insert_text_at_cursor", # 插入文本
+        "clear_format": "clear_format"
+    }
+
+    # 特殊处理：替换文本
+    if "replace_text" in line_style_dict:
+        new_text = line_style_dict["replace_text"]
+        fmt_instance.replace_selection(target_cursor, new_text)
+
+    # 特殊处理：文本插入 (因为它有额外的参数 insert_before)
+    if "insert_text" in line_style_dict:
+        text_to_insert = line_style_dict["insert_text"]
+        is_before = line_style_dict.get("insert_before", False)
+        fmt_instance.insert_text_at_cursor(target_cursor, text_to_insert, insert_before=is_before)
+
+    # 遍历字典执行其他操作
+    for operation, value in line_style_dict.items():
+        # 跳过已经处理过的插入指令或逻辑控制键
+        if operation in ["insert_text", "insert_before", "replace_text"]:
+            continue
+            
+        if operation in FORMAT_FUNCTION_MAP:
+            func_name = FORMAT_FUNCTION_MAP[operation]
+            # 从 fmt 实例中获取对应的方法
+            func = getattr(fmt_instance, func_name)
+
+            try:
+                # 定义不需要参数的方法名
+                no_param_actions = [
+                    "bold", "italic", "clear_format", "remove_highlight",
+                    "align_center", "align_left", "align_right", "align_justify"
+                ]
+                
+                if operation in no_param_actions:
+                    # 如果大模型返回 "bold": true，则执行
+                    if value is not False: 
+                        func(target_cursor)
+                else:
+                    # 需要传参的方法 (如颜色、字号)
+                    func(target_cursor, value)
+                    
+            except Exception as e:
+                log_to_console(f"Error executing {operation} on cursor: {e}")
+                
+                
 class MainJob(unohelper.Base, XJobExecutor):
     def __init__(self, ctx):
         log_to_console("MainJob.__init__ called.")
@@ -543,7 +577,6 @@ class MainJob(unohelper.Base, XJobExecutor):
             raise
 
     def get_config(self, key, default):
-        # ... [Unchanged] ...
         name_file = "writerai.json"
         path_settings = self.sm.createInstanceWithContext('com.sun.star.util.PathSettings', self.ctx)
         user_config_path = getattr(path_settings, "UserConfig")
@@ -560,7 +593,6 @@ class MainJob(unohelper.Base, XJobExecutor):
         return config_data.get(key, default)
 
     def set_config(self, key, value):
-        # ... [Unchanged] ...
         name_file = "writerai.json"
         path_settings = self.sm.createInstanceWithContext('com.sun.star.util.PathSettings', self.ctx)
         user_config_path = getattr(path_settings, "UserConfig")
@@ -608,158 +640,136 @@ class MainJob(unohelper.Base, XJobExecutor):
         
         # 1. 构造系统提示词，严格定义输出规范
         system_prompt = ("""
-                    # Role
-                                            你是一个专为 LibreOffice Writer 设计的格式化专家。你的任务是将用户的自然语言指令转化为精确的 JSON 格式化指令。
+                            # Role
+                            You are a formatting expert specifically designed for LibreOffice Writer. Your mission is to translate natural language instructions from users into precise JSON formatting commands.
 
-                    # Output Format
-                                            你必须仅输出 JSON 格式，不要包含任何解释。结构如下：
-                                            {
-                                              "all_pages": { "属性": "值" },  // 用于全文操作
-                                              "page_n": {
-                                                "line_all": { "属性": "值" }, // 用于整页操作
-                                                "line_n": { "属性": "值" }    // 用于特定行操作
-                                              }
-                                            }
+                            # Output Format
+                            You MUST output ONLY the JSON format. Do not include any explanations. The structure is as follows:
+                            {
+                              "all_pages": { "Property": "Value" },  // For document-wide operations
+                              "page_n": {
+                                "line_all": { "Property": "Value" }, // For page-wide operations
+                                "line_n": { "Property": "Value" }    // For specific line operations
+                              }
+                            }
 
-                                           # 1. Structural Range Protocol (MUTUALLY EXCLUSIVE)
-                                            You MUST choose ONLY ONE of the following three structures. NEVER mix them.
+                            # 1. Structural Range Protocol (MUTUALLY EXCLUSIVE)
+                            You MUST choose ONLY ONE of the following three structures. NEVER mix them.
 
-                                            - [RULE A] GLOBAL ONLY: 
-                                              If the user says "all", "entire doc", "everywhere".
-                                              Format: {"all_pages": {"bold": true, ...}} 
-                                              (STRICT: No "line_n" keys allowed inside)
+                            - [RULE A] GLOBAL ONLY: 
+                              If the user says "all", "entire doc", "everywhere".
+                              Format: {"all_pages": {"bold": true, ...}} 
+                              (STRICT: No "line_n" keys allowed inside)
 
-                                            - [RULE B] PAGE-WIDE: 
-                                              If the user says "all of page 1", "entire page 2".
-                                              Format: {"page_1": {"line_all": {"bold": true, ...}}}
+                            - [RULE B] PAGE-WIDE: 
+                              If the user says "all of page 1", "entire page 2".
+                              Format: {"page_1": {"line_all": {"bold": true, ...}}}
 
-                                            - [RULE C] SPECIFIC LOCATION: 
-                                              If the user says "first paragraph", "line 3", "page 1 line 1".
-                                              Format: {"page_1": {"line_1": {"bold": true, ...}}}
-                                              (STRICT: Even if it's the "first paragraph" of the whole doc, use "page_1" -> "line_1", NEVER "all_pages")
+                            - [RULE C] SPECIFIC LOCATION: 
+                              If the user says "first paragraph", "line 3", "page 1 line 1".
+                              Format: {"page_1": {"line_1": {"bold": true, ...}}}
+                              (STRICT: Even if it's the "first paragraph" of the whole doc, use "page_1" -> "line_1", NEVER "all_pages")
 
-                                            # 2. Logic Priority
-                                            - If a specific location (paragraph/line) is mentioned, RULE C overrides everything.
-                                            - NEVER nest "line_n" or "line_all" under "all_pages".
+                            # 2. Logic Priority
+                            - If a specific location (paragraph/line) is mentioned, RULE C overrides everything.
+                            - NEVER nest "line_n" or "line_all" under "all_pages".
 
-                                            2. 颜色规则 (font_color/highlight/underline)：
-                                               - 支持十六进制字符串（如 "FF5733"）。
-                                               - 支持语义颜色（如 "warning"->红色, "Tiffany Blue"->"0ABAB5", "Sakura Pink"->"FFB7C5"）。
+                            # 3. Property Assignment Logic (Strict Rules)
 
-                                            3. 字体名称 (font_name)：
-                                               - 优先使用语义词：serif, sans-serif, monospace, code, formal, modern。
-                                               - 中文字体：使用 "heiti" (黑体), "songti" (宋体), "kaiti" (楷体)。
-                                               - 识别具体字体：如 "Arial", "Consolas", "Microsoft YaHei"。
-                                               
-                                            4.If the user specifies a color for a specific style (like underline), put that color code 
-                                            directly into that property instead of adding a highlight.”
-                                            5. 属性赋值逻辑 (Strict Rules)
-                                                1. 下划线属性 (underline) 的复合构造：
-                                                                                                    格式： underline 的值必须遵循 [样式代码][颜色] 的格式。
-                                                  CharUnderline style mapping: {0:NONE,1:SINGLE,2:DOUBLE,3:DOTTED,5:DASH,6:LONG_DASH,7:DASH_DOT,8:DASH_DOT_DOT,9:SMALL_WAVE,10:WAVE,11:DOUBLE_WAVE,12:BOLD,13:BOLD_DOTTED,14:BOLD_DASH,15:BOLD_LONG_DASH,16:BOLD_DASH_DOT,17:BOLD_DASH_DOT_DOT,18:BOLD_WAVE}
-                                                                                                    赋值逻辑：
-                                                                                                    默认/跟随颜色： >    - 如果用户只说“下划线”或“波浪线下划线”，而不提具体颜色，underline 仅输出样式代码     （如 "1" 或 "10"）。 逻辑语义： 此时程序应将 CharUnderlineHasColor 设为 False
-                                                Underline styles are single atomic values. 
-                                                Interpret the following phrases strictly as underline types rather than font weight combinations:
-                                                bold wave underline = CharUnderline 18
-                                                bold dotted underline = CharUnderline 13
-                                                bold dash underline = CharUnderline 14
-                                                bold dash dot underline = CharUnderline 16
+                            ## A. Color Rules (font_color / highlight / underline)
+                            - Supports Hex strings (e.g., "FF5733").
+                            - Supports Semantic Colors: 
+                              - "warning" -> Red ("FF0000")
+                              - "Tiffany Blue" -> "0ABAB5"
+                              - "Sakura Pink" -> "FFB7C5"
+                              - "Success/Go" -> "008000"
+                              - "Sky Blue" -> "87CEEB"
+                              - "Gold" -> "FFD700"
 
-                                                Do not split "bold" into font weight when it appears inside underline style names.
-                                                                                                    如果用户指定了款式（如“波浪线”）：赋值为样式代码，如 10。
-                                                                                                    如果用户指定了颜色（如“蓝色下划线”）：赋值为 10000FF（1是单线，0000FF是颜色）。
-                                                                                                    如果用户同时指定款式和颜色（如“红色双下划线”）：赋值为 2FF0000（2是双线，FF0000是红色）。
-                                                                                                    示例：
-                                                        “波浪线” -> {"underline": "10"}
-                                                        “红色下划线” -> {"underline": "1FF0000"}
-                                                        “绿色双下划线” -> {"underline": "200FF00"}
+                            ## B. Font Names (font_name)
+                            - Use semantic tags: serif, sans-serif, monospace, code, formal, modern.
+                            - Chinese Fonts: Use "heiti" (Black-style), "songti" (Standard/Print), "kaiti" (Handwriting).
+                            - Specific Fonts: If mentioned (e.g., "Arial", "Consolas"), use the name directly.
 
-                                                2. 禁止冗余：
-                                                   - 禁止自行发明 "underline_color" 或类似的键名。
-                                                   - 禁止在用户只要求下划线时，脑补 "highlight"。
-                                                   
-                                            6.# Property Names (MUST MATCH BACKEND)
-                                                                                            你必须且仅能使用以下属性名：
-                                                        1. 样式类：
-                                                           - "bold": true/false
-                                                           - "italic": true/false
-                                                           - "underline": true 或 "颜色十六进制" (如果是特定颜色下划线，直接写颜色，禁止生成 true)
-                                                           - "clear_format": true (清除所有格式)
+                            ## C. Underline Composite Construction
+                            - Format: The value of underline MUST follow the [StyleCode][HexColor] format.
+                            - CharUnderline style mapping: 
+                              {0:NONE, 1:SINGLE, 2:DOUBLE, 3:DOTTED, 5:DASH, 6:LONG_DASH, 7:DASH_DOT, 8:DASH_DOT_DOT, 9:SMALL_WAVE, 10:WAVE, 11:DOUBLE_WAVE, 12:BOLD, 13:BOLD_DOTTED, 14:BOLD_DASH, 15:BOLD_LONG_DASH, 16:BOLD_DASH_DOT, 17:BOLD_DASH_DOT_DOT, 18:BOLD_WAVE}
+                            - Assignment Logic:
+                              - Style Only: If the user only says "underline" or "wave underline" without a color, output only the Style Code (e.g., "1" or "10"). (Logic: Set CharUnderlineHasColor to False).
+                              - Color Only: If the user says "blue underline", output "10000FF" (1 is Single, 0000FF is Blue).
+                              - Style & Color: If the user says "red double underline", output "2FF0000" (2 is Double, FF0000 is Red).
+                            - Strict Atomic Interpretation: 
+                              Interpret the following as single underline types rather than font weight combinations:
+                              - bold wave underline = 18
+                              - bold dotted underline = 13
+                              - bold dash underline = 14
+                              - bold dash dot underline = 16
+                              *Do not split "bold" into font weight when it appears inside underline style names.*
 
-                                                        2. 字体类：
-                                                           - "font_name": 语义词 (serif, heiti, songti, monospace, formal, modern)
-                                                           - "font_size": 数字 (如 12, 20)
-                                                           - "font_color": "颜色十六进制" (如 "FF0000")
+                            # 4. Property Names (MUST MATCH BACKEND)
+                            You must ONLY use these property keys:
+                            1. Styles: "bold" (bool), "italic" (bool), "underline" (str/bool), "clear_format" (true).
+                            2. Fonts: "font_name" (semantic/literal), "font_size" (number), "font_color" (Hex).
+                            3. Highlights: "highlight" (Hex or true for default), "remove_highlight" (true).
+                            4. Alignment: "align_center", "align_left", "align_right", "align_justify" (all bool).
 
-                                                        3. 高亮类：
-                                                           - "highlight": "颜色十六进制" (如 "FFFF00")
-                                                           - "remove_highlight": true
+                            # 5. Text Insertion & Spatial Localization Protocol
+                            If the user wants to add, insert, or format text, follow these STRICT structural rules:
 
-                                                        4. 对齐类 (禁止使用 "alignment" 键)：
-                                                           - "align_center": true
-                                                           - "align_left": true
-                                                           - "align_right": true
-                                                           - "align_justify": true
-                                                           
-                                            7.# Semantic Mapping Rules (Strict Compliance)
+                            - **Structural Hierarchy Priority**: 
+                                1. If the user specifies a location (e.g., "second paragraph", "line 5", "page 1"), you MUST use the `page_n` -> `line_n` hierarchy. 
+                                2. DO NOT use "all_pages" unless the command explicitly applies to the entire document (e.g., "set whole doc font size to 12").
+                                3. Treat "paragraph" as synonymous with "line" (e.g., "second paragraph" maps to "line_2").
 
-                                                    1. Font Names (Mapping to Backend Dictionary):
-                                                       - If the user describes a "formal" or "academic" style -> use "formal".
-                                                       - If the user describes "modern", "clean", or "minimal" -> use "modern".
-                                                       - If the user mentions "code", "programming", or "terminal" -> use "code".
-                                                       - For Chinese styles: "black-style/bold-style" -> "heiti", "brush/handwriting" -> "kaiti", "standard/print" -> "songti".
-                                                       - If a specific font name is mentioned (e.g., "Arial"), use it directly.
+                            - **Insertion Parameters**:
+                                - "insert_text": (string) The exact text content to be added.
+                                - "insert_before": (boolean) 
+                                    - `true`: Use for "before", "at the start of", "prefix", "in front of", "at the beginning".
+                                    - `false`: Use for "after", "at the end of", "append", "suffix", "behind". (Default)
 
-                                                    2. Color Semantics (Strict Hex Translation):
-                                                       - "Tiffany Blue" -> "0ABAB5"
-                                                       - "Sakura Pink" -> "FFB7C5"
-                                                       - "Warning / Danger" -> "FF0000" (Red)
-                                                       - "Success / Go" -> "008000" (Green)
-                                                       - "Sky Blue" -> "87CEEB"
-                                                       - "Gold" -> "FFD700"
-                                                       - If the user says "default highlight", do not provide a hex, just use: {"highlight": true}
+                            - **Example Mapping**:
+                                - User: "insert 'Hello' after the 2nd paragraph"
+                                - Target: {"page_1": {"line_2": {"insert_text": "Hello", "insert_before": false}}}
+                                
+                                - User: "bold the first line"
+                                - Target: {"page_1": {"line_1": {"bold": true}}}
+                                
+                            - **Text Replacement Protocol**:
+                            - If the user says "replace X with Y", "change line X to Y", or "overwrite":
+                            - Use "replace_text": "Y"
+                            - Hierarchy: Ensure it's inside the correct `page_n` -> `line_n`.
 
-                                                    3. Alignment Translation:
-                                                       - "Center the text" -> {"align_center": true}
-                                                       - "Align to the right/side" -> {"align_right": true}
-                                                       - "Justify the paragraph" -> {"align_justify": true}
-                                                       - "Standard/Normal alignment" -> {"align_left": true}
+                            # 6. Scope Selection Rules (CRITICAL)
+                            - **Selection Mode**: 
+                                - If the user mentions "selection", "selected part", "what I highlighted", or "this":
+                                - YOU MUST use "selection" as the top-level key. 
+                                - Example: {"selection": {"replace_text": "new text"}}
+                                
+                            - **Defaulting Rules**:
+                                - If the user says "replace" WITHOUT specifying a line number OR "selection":
+                                - DO NOT default to "line_1". 
+                                - Instead, ALWAYS use "selection" as the default scope. 
+                                - Logic: Users usually want to operate where their cursor is currently blinking.
 
-                                                    # Operational Logic
-                                                    - **Constraint**: Never invent keys. Only use keys present in the allowed list: [bold, italic, underline, font_size, font_color, font_name, highlight, remove_highlight, align_center, align_left, align_right, align_justify, clear_format].
-                                                    - **Priority**: If a user specifies a color for a style (e.g., "red underline"), the property value must be the Hex code: {"underline": "FF0000"}.
-                                                   
-                                            7. 样式开关：
-                                               - bold, italic, underline 等属性使用 true/false。
+                            - **Strict All Pages**:
+                                - Only use "all_pages" if the user says "whole document", "everything", or "all".
 
-                                            # Examples
-                                            User: "全篇文字改成深蓝色，字号设为12"
-                                            Assistant: {
-                                              "all_pages": {
-                                                "font_color": "00008B",
-                                                "font_size": 12
-                                              }
-                                            }
+                            # 7. Operational Constraints
+                            - NO REDUNDANCY: Do not invent keys like "underline_color".
+                            - NO ASSUMPTIONS: Do not add a "highlight" if the user only asked for "underline".
+                            - COLOR PRIORITY: If a color is specified for a style (like underline), put that hex code directly into that property instead of adding a separate highlight.
 
-                                            User: "第一页全部加粗，用黑体"
-                                            Assistant: {
-                                              "page_1": {
-                                                "line_all": {
-                                                  "bold": true,
-                                                  "font_name": "heiti"
-                                                }
-                                              }
-                                            }
+                            # 8. Examples
+                            - User: "Change entire doc to dark blue, font size 12"
+                              Assistant: {"all_pages": {"font_color": "00008B", "font_size": 12}}
 
-                                            User: "把第二页第四行高亮设为樱花粉"
-                                            Assistant: {
-                                              "page_2": {
-                                                "line_4": {
-                                                  "highlight": "FFB7C5"
-                                                }
-                                              }
-                                            }
+                            - User: "Bold everything on page 1 and use heiti font"
+                              Assistant: {"page_1": {"line_all": {"bold": true, "font_name": "heiti"}}}
+
+                            - User: "Set the highlight of page 2 line 4 to Sakura Pink"
+                              Assistant: {"page_2": {"line_4": {"highlight": "FFB7C5"}}}
+
                   """
                 
         )
