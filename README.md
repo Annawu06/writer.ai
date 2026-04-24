@@ -11,15 +11,15 @@ Font style
 
 1. font name (even the semantic one) ✅
 
-2. Bold ✅
+2. Bold ✅ or remove
 
-3.  Italic ✅
+3.  Italic ✅ or remove 
 
-4. underline (user-defined color and different format) ✅
+4. underline (user-defined color and different format) ✅ or remove
 
-5. font size 
+5. font size ✅
 
-6. font color
+6. font color✅ or remove
 
 7. Highlight (user-defined color) or remove ✅
 
@@ -27,10 +27,10 @@ Font style
 
 Paragraph
 
-1. alignment (left,right,center and justify)
+1. alignment (left,right,center and justify) ✅
 
-2. insert Text and replace text
+2. insert Text before or after certain line ✅and replace text ✅
 
    
 
-Remove all format
+Remove all format ✅
