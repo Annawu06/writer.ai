@@ -1,75 +1,71 @@
-# writer.ai
+# Writer.AI
 
-AI formatting extension for LibreOffice Writer.
+Writer.AI is an AI-assisted formatting extension for LibreOffice Writer. It
+converts natural-language instructions into a validated formatting plan, shows
+the plan for confirmation, and applies changes as one undoable operation.
 
-## Install
+## Features
 
-1. Build `writer.ai.oxt` with `./build.sh`.
-2. In LibreOffice, open **Tools > Extension Manager**.
+- Format the current document or selection.
+- Format titles, headings, body paragraphs, fonts, colors, alignment, and indentation.
+- Locate content by paragraph number, keyword, table name, row, and column.
+- Format table headers, backgrounds, borders, fonts, alignment, row height, and column widths.
+- Support zebra rows, automatic numeric/date alignment, first-column emphasis, cell merging, and numbered captions.
+- Control table pagination with repeated headers, table splitting, and keep-together behavior.
+- Preview formatting plans, undo the complete operation, cancel requests, and use a 60-second timeout.
+- Work with Kimi K3 and other OpenAI-compatible API providers.
+
+## Requirements
+
+- LibreOffice 25.8.4 or later.
+- An API key for a supported provider.
+- Network access to the selected API endpoint.
+
+## Installation
+
+1. Build or download `writer.ai.oxt`.
+2. Open LibreOffice and select **Tools > Extension Manager**.
 3. Select **Add** and choose `writer.ai.oxt`.
+4. Restart LibreOffice if the Writer.AI menu does not appear immediately.
 
-The extension adds Writer AI formatting commands to the Tools menu.
+## Configuration
 
-### **Function**
+Open **Writer.AI > AI Formatter > Setting** and configure the provider, Base
+URL, model name, and API key. The default preset uses Kimi K3 through Alibaba
+Cloud Bailian. The API key is stored in LibreOffice's password container and is
+not written to the project configuration file or application logs.
 
-user can choose to format current file or choose other files
+## Usage
 
-support certain paragraph,page and whole document
+1. Open a Writer document.
+2. Select **Writer.AI > AI Formatter**.
+3. Enter an instruction, such as `Indent every paragraph by two characters`.
+4. Review the validated plan and choose **Yes** to apply it.
+5. Use the undo prompt to revert the complete formatting operation.
 
-Font style
+While a request is running, the Writer status bar shows the analysis state.
+Use **Writer.AI > AI Formatter > Cancel Formatting** to cancel it.
 
-1. font name (even the semantic one) ✅
+## Development
 
-2. Bold ✅ or remove
+Build the extension package:
 
-3.  Italic ✅ or remove 
+```sh
+./build.sh
+```
 
-4. underline (user-defined color and different format) ✅ or remove
-
-5. font size ✅
-
-6. font color✅ or remove
-
-7. Highlight (user-defined color) or remove ✅
-
-   
-
-Paragraph
-
-1. alignment (left,right,center and justify) ✅
-
-2. insert Text before or after certain line ✅and replace text ✅
-
-   
-
-Remove all format ✅
-
-
-
-What i need to do :
-
-1. achieve  formating title and paragraph ✅
-2. table formating ✅
-3. thinking about
-
-### API configuration
-
-The settings dialog supports a provider preset or a custom OpenAI-compatible
-API. Users can enter their own API key, model name, and Base URL. The default
-configuration is Kimi K3 through Alibaba Cloud Bailian.
-
-The API key is stored in LibreOffice's password container. Provider, Base URL,
-and model can be changed independently in Settings. The extension uses a
-60-second request timeout, runs requests in the background, and supports
-cancellation from the Tools menu.
-
-## Development checks
-
-Run the complete test suite with:
+Run the complete test suite:
 
 ```sh
 make test
 ```
 
-This includes real headless LibreOffice document tests and DOCX round-trip
-tests. Build the release package with `./build.sh`.
+The suite includes real headless LibreOffice document tests, DOCX round-trip
+tests, table formatting tests, and API response validation tests.
+
+See [README.zh-CN.md](README.zh-CN.md) for the Chinese documentation and
+[CHANGELOG.md](CHANGELOG.md) for release history.
+
+## License
+
+License information has not yet been specified.
