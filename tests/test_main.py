@@ -99,6 +99,7 @@ class MainLogicTests(unittest.TestCase):
             body = json.loads(request.data.decode("utf-8"))
             self.assertEqual(body["model"], "test-model")
             self.assertFalse(body["stream"])
+            self.assertEqual(body["max_completion_tokens"], 512)
             self.assertEqual(timeout, 60)
             return FakeResponse(payload)
 

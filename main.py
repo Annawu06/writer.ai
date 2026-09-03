@@ -1761,7 +1761,7 @@ their property meaning. Never include explanations or Markdown.
                 {"role": "user", "content": query},
             ],
             "stream": False,
-            "max_completion_tokens": 2048,
+            "max_completion_tokens": 512,
         }).encode("utf-8")
         request = Request(
             endpoint,
