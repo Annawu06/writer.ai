@@ -224,6 +224,31 @@ class MainLogicTests(unittest.TestCase):
             },
         )
 
+    def test_api_key_reads_password_container_with_handler(self):
+        class Record:
+            UserList = [type("User", (), {"Passwords": ["stored-key"]})()]
+
+        class Container:
+            def findForName(self, url, user, handler):
+                self.handler = handler
+                return Record()
+
+        class ServiceManager:
+            def __init__(self, container, handler):
+                self.container = container
+                self.handler = handler
+
+            def createInstanceWithContext(self, service, context):
+                return self.container if service.endswith("PasswordContainer") else self.handler
+
+        container = Container()
+        handler = object()
+        job = object.__new__(main.MainJob)
+        job.ctx = object()
+        job.sm = ServiceManager(container, handler)
+        self.assertEqual(job.get_api_key(), "stored-key")
+        self.assertIs(container.handler, handler)
+
 
 if __name__ == "__main__":
     unittest.main()

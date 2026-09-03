@@ -1250,10 +1250,16 @@ class MainJob(unohelper.Base, XJobExecutor):
             "com.sun.star.task.PasswordContainer", self.ctx
         )
 
+    def _password_interaction_handler(self):
+        return self.sm.createInstanceWithContext(
+            "com.sun.star.task.InteractionHandler", self.ctx
+        )
+
     def get_api_key(self):
         try:
+            handler = self._password_interaction_handler()
             record = self._password_container().findForName(
-                self.PASSWORD_URL, self.PASSWORD_USER, None
+                self.PASSWORD_URL, self.PASSWORD_USER, handler
             )
             if record.UserList and record.UserList[0].Passwords:
                 return record.UserList[0].Passwords[0]
@@ -1270,9 +1276,7 @@ class MainJob(unohelper.Base, XJobExecutor):
         if not api_key:
             return
         try:
-            handler = self.sm.createInstanceWithContext(
-                "com.sun.star.task.InteractionHandler", self.ctx
-            )
+            handler = self._password_interaction_handler()
             container.addPersistent(
                 self.PASSWORD_URL, self.PASSWORD_USER, (api_key,), handler
             )

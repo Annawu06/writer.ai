@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased] - 1.1.0
+## 1.1.0 - 2026-09-03
 
 - Correctly remove bold, italic, and underline formatting when requested.
 - Add regression coverage for formatting removal.
