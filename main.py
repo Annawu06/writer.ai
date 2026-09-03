@@ -81,16 +81,18 @@ FORMAT_KEYS = {
 TABLE_KEYS = {
     "cell_background", "table_background", "header", "format_header",
     "header_background", "header_bold", "align", "font_name",
-    "font_family", "font_size", "font_color",
+    "font_family", "font_size", "font_color", "repeat_header",
+    "first_column_bold", "zebra", "zebra_background", "row_height",
+    "border_color", "border_width",
 }
 
 
 def _valid_value(key, value):
-    if key in {"bold", "italic", "remove_highlight", "clear_format", "title", "body", "insert_before", "header", "format_header", "header_bold"}:
+    if key in {"bold", "italic", "remove_highlight", "clear_format", "title", "body", "insert_before", "header", "format_header", "header_bold", "repeat_header", "first_column_bold", "zebra"}:
         return isinstance(value, bool)
-    if key in {"font_size", "first_line_indent"}:
+    if key in {"font_size", "first_line_indent", "row_height", "border_width"}:
         return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
-    if key in {"underline", "font_color", "font_name", "font_family", "highlight", "replace_text", "insert_text", "paragraph_style", "cell_background", "table_background", "header_background", "align"}:
+    if key in {"underline", "font_color", "font_name", "font_family", "highlight", "replace_text", "insert_text", "paragraph_style", "cell_background", "table_background", "header_background", "zebra_background", "border_color", "align"}:
         return isinstance(value, (str, int, float, bool))
     if key.startswith("align_"):
         return isinstance(value, bool)
@@ -730,7 +732,7 @@ class Format:
         cursor.gotoEnd(True)
         return cursor
 
-    def _format_table_cell(self, cell, options, is_header):
+    def _format_table_cell(self, cell, options, is_header, is_first_column=False):
         cell_cursor = cell.createTextCursor()
         cell_cursor.gotoEnd(True)
 
@@ -755,14 +757,47 @@ class Format:
         if alignment in alignments:
             cell_cursor.ParaAdjust = alignments[alignment]
 
+        if options.get("first_column_bold", False) and is_first_column:
+            cell_cursor.CharWeight = BOLD
+
+        border_color = options.get("border_color")
+        if border_color is not None:
+            try:
+                border = uno.createUnoStruct("com.sun.star.table.BorderLine2")
+                border.Color = self.parse_color(border_color)
+                border.LineWidth = int(options.get("border_width", 1) * 35.2778)
+                for border_name in ("TopBorder", "BottomBorder", "LeftBorder", "RightBorder"):
+                    setattr(cell, border_name, border)
+            except Exception as e:
+                log_to_console(f"Error setting table border: {e}")
+
     def format_table(self, table, options):
         """Format all cells and optionally the first row as a header."""
         header = options.get("header", options.get("format_header", False))
+        if options.get("repeat_header", False):
+            table.RepeatHeadline = True
+
+        row_height = options.get("row_height")
+        if row_height is not None:
+            try:
+                height = int(float(row_height) * 35.2778)
+                for index in range(table.Rows.getCount()):
+                    row = table.Rows.getByIndex(index)
+                    row.IsAutoHeight = False
+                    row.Height = height
+            except Exception as e:
+                log_to_console(f"Error setting table row height: {e}")
+
         for cell_name in table.getCellNames():
+            row_number = self._cell_row(cell_name)
+            cell_options = dict(options)
+            if options.get("zebra", False) and row_number and row_number % 2 == 0:
+                cell_options["cell_background"] = options.get("zebra_background", "F2F2F2")
             self._format_table_cell(
                 table.getCellByName(cell_name),
-                options,
-                bool(header and self._cell_row(cell_name) == 1),
+                cell_options,
+                bool(header and row_number == 1),
+                bool(re.match(r"^A\d+$", cell_name)),
             )
             
         
@@ -1188,8 +1223,9 @@ class MainJob(unohelper.Base, XJobExecutor):
                                the document lacks paragraph styles; the first non-empty paragraph is
                                treated as the title and short punctuation-free paragraphs as headings.
                                Table properties: "cell_background", "table_background", "header": true,
-                               "header_background", "header_bold", "align" (left/right/center/justify),
-                               "font_name", "font_size", and "font_color".
+                               "header_background", "header_bold", "repeat_header", "first_column_bold",
+                               "zebra", "zebra_background", "row_height", "border_color", "border_width",
+                               "align" (left/right/center/justify), "font_name", "font_size", and "font_color".
 
                             # 5. Text Insertion & Spatial Localization Protocol
                             If the user wants to add, insert, or format text, follow these STRICT structural rules:
