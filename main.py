@@ -542,10 +542,7 @@ class Format:
 
     def set_underline(self, cursor, value):
         try:
-            print(f"value:{value}")
-
             val_str = str(value).strip()
-            print(f"val_str{val_str}")
             style_part = "1"
             color_part = None
 
@@ -569,10 +566,8 @@ class Format:
             else:
                 cursor.CharUnderlineHasColor = False
 
-            print(f"Fixed Debug - Raw: {val_str}, Style: {cursor.CharUnderline}, HasColor: {cursor.CharUnderlineHasColor}")
-
         except Exception as e:
-            print(f"Critical Underline Error: {e}")
+            log_to_console(f"Critical underline error: {e}")
             cursor.CharUnderline = 0
 
 
@@ -1406,8 +1401,6 @@ class MainJob(unohelper.Base, XJobExecutor):
     Returns:
         dict: 结构化后的指令字典。若解析失败则返回空字典。
     """
-        print(f"original query is :{query}")
-        
         # 1. 构造系统提示词，严格定义输出规范
         system_prompt = ("""
                             # Role
@@ -1602,7 +1595,6 @@ class MainJob(unohelper.Base, XJobExecutor):
             with urlopen(request, timeout=60) as response:
                 response_data = json.loads(response.read().decode("utf-8"))
             content = response_data["choices"][0]["message"]["content"]
-            print(f"content:{content}")
             try:
                 # 1. 清理字符串
                 clean_json = content.replace("```json", "").replace("```", "").strip()

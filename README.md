@@ -1,5 +1,14 @@
 # writer.ai
-AI extension for LibreOffice Writer
+
+AI formatting extension for LibreOffice Writer.
+
+## Install
+
+1. Build `writer.ai.oxt` with `./build.sh`.
+2. In LibreOffice, open **Tools > Extension Manager**.
+3. Select **Add** and choose `writer.ai.oxt`.
+
+The extension adds Writer AI formatting commands to the Tools menu.
 
 ### **Function**
 
@@ -48,3 +57,19 @@ What i need to do :
 The settings dialog supports a provider preset or a custom OpenAI-compatible
 API. Users can enter their own API key, model name, and Base URL. The default
 configuration is Kimi K3 through Alibaba Cloud Bailian.
+
+The API key is stored in LibreOffice's password container. Provider, Base URL,
+and model can be changed independently in Settings. The extension uses a
+60-second request timeout, runs requests in the background, and supports
+cancellation from the Tools menu.
+
+## Development checks
+
+Run the complete test suite with:
+
+```sh
+make test
+```
+
+This includes real headless LibreOffice document tests and DOCX round-trip
+tests. Build the release package with `./build.sh`.
