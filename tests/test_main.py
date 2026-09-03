@@ -67,6 +67,23 @@ class MainLogicTests(unittest.TestCase):
         fmt.set_first_line_indent(cursor, 2)
         self.assertEqual(cursor.ParaFirstLineIndent, 846)
 
+    def test_format_removal_properties(self):
+        class Cursor:
+            CharWeight = main.BOLD
+            CharPosture = main.ITALIC
+            CharUnderline = 1
+            CharUnderlineHasColor = True
+
+        cursor = Cursor()
+        formatter = object.__new__(main.Format)
+        formatter.set_bold(cursor, False)
+        formatter.set_italic(cursor, False)
+        formatter.set_underline(cursor, False)
+        self.assertEqual(cursor.CharWeight, main.NORMAL)
+        self.assertEqual(cursor.CharPosture, main.NONE)
+        self.assertEqual(cursor.CharUnderline, 0)
+        self.assertFalse(cursor.CharUnderlineHasColor)
+
     def test_openai_compatible_request(self):
         payload = {"choices": [{"message": {"content": '{"all_pages": {"bold": true}}'}}]}
 

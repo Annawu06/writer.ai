@@ -533,15 +533,17 @@ class Format:
     # ------------------------------------------------
 
     def set_bold(self,cursor, value=True):
-        cursor = cursor
-        cursor.CharWeight = BOLD
+        cursor.CharWeight = BOLD if value is not False else NORMAL
 
     def set_italic(self,cursor, value=True):
-        cursor = cursor
-        cursor.CharPosture = ITALIC
+        cursor.CharPosture = ITALIC if value is not False else NONE
 
     def set_underline(self, cursor, value):
         try:
+            if value is False:
+                cursor.CharUnderline = 0
+                cursor.CharUnderlineHasColor = False
+                return
             val_str = str(value).strip()
             style_part = "1"
             color_part = None
@@ -1119,7 +1121,7 @@ def apply_styles(fmt_instance, target_cursor, line_style_dict):
             try:
                 # 定义不需要参数的方法名
                 no_param_actions = [
-                    "bold", "italic", "clear_format", "remove_highlight",
+                    "clear_format", "remove_highlight",
                     "align_center", "align_left", "align_right", "align_justify",
                     "title", "body"
                 ]

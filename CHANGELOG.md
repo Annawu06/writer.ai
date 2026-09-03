@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased] - 1.1.0
+
+- Correctly remove bold, italic, and underline formatting when requested.
+- Add regression coverage for formatting removal.
+
 ## 1.0.0 - 2026-09-03
 
 First release of Writer.AI for LibreOffice Writer.
