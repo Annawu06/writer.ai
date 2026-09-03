@@ -44,7 +44,7 @@ configuration for future Writer sessions.
 2. Select **Writer.AI > AI Formatter**.
 3. Enter an instruction, such as `Indent every paragraph by two characters`.
 4. Review the validated plan and choose **Yes** to apply it.
-5. Use the undo prompt to revert the complete formatting operation.
+5. Use LibreOffice's `Ctrl+Z` to revert the complete formatting operation if needed.
 
 While a request is running, the Writer status bar shows the analysis state.
 Use **Writer.AI > AI Formatter > Cancel Formatting** to cancel it.

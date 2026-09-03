@@ -252,6 +252,99 @@ def count_format_operations(request):
         else:
             count += 1
     return count
+
+
+PREVIEW_PROPERTY_LABELS = {
+    "bold": "加粗",
+    "italic": "斜体",
+    "underline": "下划线",
+    "font_size": "字号",
+    "font_color": "文字颜色",
+    "font_name": "字体",
+    "font_family": "字体",
+    "highlight": "高亮",
+    "remove_highlight": "取消高亮",
+    "align_center": "居中",
+    "align_left": "左对齐",
+    "align_right": "右对齐",
+    "align_justify": "两端对齐",
+    "first_line_indent": "段首缩进",
+    "header": "设置表头",
+    "header_background": "表头背景色",
+    "table_background": "表格背景色",
+    "cell_background": "单元格背景色",
+    "row_height": "行高",
+    "column_widths": "列宽",
+    "caption": "表格标题",
+    "title": "标题样式",
+}
+
+
+def _preview_target(scope):
+    if scope == "all_pages" or scope in {"document", "entire_doc"}:
+        return "整个文档"
+    match = re.fullmatch(r"page_(\d+)", str(scope))
+    if match:
+        return f"第 {match.group(1)} 页"
+    match = re.fullmatch(r"paragraph_(\d+)", str(scope))
+    if match:
+        return f"第 {match.group(1)} 个段落"
+    match = re.fullmatch(r"table_(\d+)", str(scope))
+    if match:
+        return f"第 {match.group(1)} 个表格"
+    if scope == "selection":
+        return "当前选区"
+    if scope == "paragraph_text":
+        return "关键词所在段落"
+    return str(scope)
+
+
+def summarize_format_request(request):
+    """Create a short user-facing summary without exposing model JSON."""
+    summaries = []
+
+    def visit(value, target):
+        if not isinstance(value, dict):
+            return
+        for key, item in value.items():
+            if key == "line_all":
+                visit(item, target + "全部行")
+            elif re.fullmatch(r"line_\d+", str(key)):
+                visit(item, target + key.replace("line_", "第 ") + " 行")
+            elif key == "tables":
+                visit(item, target)
+            elif re.fullmatch(r"table_\d+", str(key)):
+                visit(item, _preview_target(key))
+            elif key == "cells":
+                visit(item, target)
+            elif re.fullmatch(r"row_\d+_col_\d+", str(key)):
+                visit(item, target + " " + key.replace("row_", "第 ").replace("_col_", " 行第 ") + " 列")
+            elif key in {"paragraphs", "structure"}:
+                visit(item, target)
+            elif key == "contains":
+                if isinstance(item, dict):
+                    keyword = item.get("text", "")
+                    visit(item.get("format", {}), f"包含“{keyword}”的段落")
+            elif key == "paragraph_text":
+                if isinstance(item, dict):
+                    visit(item.get("format", {}), "关键词所在段落")
+            elif isinstance(item, dict):
+                visit(item, _preview_target(key) if key != "title" else target)
+            else:
+                label = PREVIEW_PROPERTY_LABELS.get(key, key)
+                if item is True and key in {"bold", "italic", "align_center", "align_left", "align_right", "align_justify", "header"}:
+                    detail = ""
+                elif key == "highlight" and item is True:
+                    detail = "（黄色）"
+                elif key == "remove_highlight" and item is True:
+                    detail = ""
+                else:
+                    detail = f"：{item}"
+                summaries.append(f"{target}：{label}{detail}")
+
+    for scope, value in request.items() if isinstance(request, dict) else ():
+        visit(value, _preview_target(scope))
+    return summaries
     
        
 class Format:
@@ -1246,10 +1339,6 @@ class MainJob(unohelper.Base, XJobExecutor):
             log_to_console(
                 f"Formatting completed successfully: {count_format_operations(format_request)} operations."
             )
-
-            if self._confirm_undo(target_doc):
-                undo_manager.undo()
-                log_to_console("Formatting undone by user.")
         except Exception as e:
             log_to_console(f"Formatting failed after API response: {e}")
             traceback.print_exc(file=sys.stderr)
@@ -1338,13 +1427,15 @@ class MainJob(unohelper.Base, XJobExecutor):
         return toolkit.createMessageBox(parent_window, "querybox", BUTTONS_YES_NO, title, message)
 
     def _confirm_format_preview(self, target_doc, format_request, validation_warnings=None):
-        preview = json.dumps(format_request, ensure_ascii=False, indent=2)
-        if len(preview) > 6000:
-            preview = preview[:6000] + "\n... (preview truncated)"
         operation_count = count_format_operations(format_request)
+        summary = summarize_format_request(format_request)
+        if not summary:
+            summary = ["未识别到可执行的格式化操作"]
         message = (
-            f"Validated formatting plan ({operation_count} operations):\n\n"
-            + preview + "\n\nApply it?"
+            f"将执行 {operation_count} 项格式化操作：\n\n- "
+            + "\n- ".join(summary[:30])
+            + ("\n- ..." if len(summary) > 30 else "")
+            + "\n\nApply it?"
         )
         warnings = [warning for warning in (validation_warnings or []) if isinstance(warning, str)]
         if warnings:
@@ -1631,8 +1722,27 @@ class MainJob(unohelper.Base, XJobExecutor):
                               Assistant: {"tables": {"table_1": {"header": true, "header_background": "D9E2F3", "align": "center"}}}
 
                   """
-                
+
         )
+
+        # Keep the production prompt compact so model requests start faster.
+        # The returned JSON is still checked by validate_format_request below.
+        system_prompt = """
+You are Writer.AI, a LibreOffice Writer formatting assistant. Return ONLY one
+JSON object. Valid scopes: selection, all_pages, paragraph_N, paragraph_text,
+paragraphs, structure, page_N, tables, and table_N. Valid properties include
+bold, italic, underline, font_size, font_color, font_name, highlight,
+remove_highlight, align_center, align_left, align_right, align_justify, title,
+body, paragraph_style, first_line_indent, replace_text, insert_text,
+insert_before, and table properties header, header_background, cell_background,
+table_background, header_bold, align, repeat_header, first_column_bold, zebra,
+zebra_background, row_height, border_color, border_width, column_widths,
+merge_cells, auto_align, caption, number, caption_prefix, split, and
+keep_together. Use paragraph_N or paragraph_text for stable paragraph targets.
+Use tables.table_N.cells.row_N_col_N for table cells. Use structure with title,
+heading_1, heading_2, heading_3, and body for document roles. Values must match
+their property meaning. Never include explanations or Markdown.
+"""
         if not api_key:
             api_key = os.environ.get("WRITER_AI_API_KEY", "")
         if not api_key or not model or not endpoint:
@@ -1818,7 +1928,7 @@ class MainJob(unohelper.Base, XJobExecutor):
             add("btn_ok", "Button", button_start_x, y_pos, BUTTON_WIDTH, BUTTON_HEIGHT, {
                 "PushButtonType": OK,
                 "DefaultButton": True,
-                "Label": "保存配置 / Save Settings",
+                "Label": "Save Settings",
             })
             add("btn_cancel", "Button", button_start_x + BUTTON_WIDTH + HORI_SEP, y_pos, BUTTON_WIDTH, BUTTON_HEIGHT, {"PushButtonType": CANCEL})
 
