@@ -147,6 +147,23 @@ def validate_format_request(request):
                         paragraphs[paragraph_scope] = {"text": paragraph_style["text"], "format": clean_style}
             if paragraphs:
                 clean_request[scope] = paragraphs
+        elif scope == "structure":
+            if not isinstance(value, dict):
+                continue
+            structure = {}
+            if isinstance(value.get("infer"), bool):
+                structure["infer"] = value["infer"]
+            for role in {"title", "heading_1", "heading_2", "body"}:
+                if role in value:
+                    role_style = value[role]
+                    if role_style is True:
+                        structure[role] = True
+                    elif isinstance(role_style, dict):
+                        clean_style = validate_style(role_style, FORMAT_KEYS)
+                        if clean_style:
+                            structure[role] = clean_style
+            if len(structure) > 1 or any(role in structure for role in {"title", "heading_1", "heading_2", "body"}):
+                clean_request[scope] = structure
         elif scope == "tables":
             if not isinstance(value, dict):
                 continue
@@ -279,6 +296,62 @@ class Format:
                 cursor.gotoRange(paragraph.getEnd(), True)
                 return cursor
         return None
+
+    @staticmethod
+    def _is_probable_heading(text):
+        text = text.strip()
+        return bool(text) and len(text) <= 40 and not re.search(r"[。！？.!?；;]$", text)
+
+    def _paragraph_role(self, paragraph, first_content_seen):
+        style = paragraph.ParaStyleName
+        if style in {"Title", "Subtitle"}:
+            return "title"
+        if style == "Heading 1":
+            return "heading_1"
+        if style == "Heading 2":
+            return "heading_2"
+        if style in {"Text Body", "Body Text", "Default Paragraph Style"}:
+            return "body"
+        if not first_content_seen:
+            return "title"
+        if self._is_probable_heading(paragraph.String):
+            return "heading_1"
+        return "body"
+
+    def format_document_structure(self, options):
+        """Apply semantic paragraph roles without touching paragraphs in tables."""
+        if not isinstance(options, dict):
+            return
+        infer = options.get("infer", False) is True
+        first_content_seen = False
+        roles = {"title", "heading_1", "heading_2", "body"}
+        for paragraph in self._paragraphs():
+            if not paragraph.String.strip():
+                continue
+            role = self._paragraph_role(paragraph, first_content_seen) if infer else {
+                "Title": "title", "Subtitle": "title", "Heading 1": "heading_1",
+                "Heading 2": "heading_2", "Text Body": "body", "Body Text": "body",
+                "Default Paragraph Style": "body",
+            }.get(paragraph.ParaStyleName)
+            if role not in roles or role not in options:
+                first_content_seen = True
+                continue
+
+            cursor = self.doc.Text.createTextCursorByRange(paragraph.getStart())
+            cursor.gotoRange(paragraph.getEnd(), True)
+            role_options = options[role]
+            if role_options is True:
+                role_options = {}
+            if not isinstance(role_options, dict):
+                first_content_seen = True
+                continue
+            style_name = {
+                "title": "Title", "heading_1": "Heading 1",
+                "heading_2": "Heading 2", "body": "Text Body",
+            }[role]
+            self.set_paragraph_style(cursor, style_name)
+            apply_styles(self, cursor, role_options)
+            first_content_seen = True
         
     def get_all_lines_cursor(self, page_num):
 
@@ -700,6 +773,10 @@ def execute_format_request(format_request, fmt):
         return
 
     for page_key, page_value in format_request.items():
+        if page_key == "structure":
+            fmt.format_document_structure(page_value)
+            continue
+
         if re.fullmatch(r"paragraph_\d+", str(page_key)):
             paragraph_cursor = fmt.get_paragraph_cursor(int(page_key.split("_")[1]))
             if paragraph_cursor:
@@ -1106,6 +1183,10 @@ class MainJob(unohelper.Base, XJobExecutor):
                                or "paragraphs": {"paragraph_1": { ... }, "contains": {"text": "keyword", "format": { ... }}}.
                                These paragraph locations are independent of page layout.
                                Table cells use "tables": {"table_1": {"cells": {"row_1_col_1": { ... }}}}.
+                            9. Document structure: use "structure" with optional "title", "heading_1",
+                               "heading_2", and "body" format objects. Set "infer": true only when
+                               the document lacks paragraph styles; the first non-empty paragraph is
+                               treated as the title and short punctuation-free paragraphs as headings.
                                Table properties: "cell_background", "table_background", "header": true,
                                "header_background", "header_bold", "align" (left/right/center/justify),
                                "font_name", "font_size", and "font_color".
