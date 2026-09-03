@@ -32,7 +32,8 @@ Writer.AI 是面向 LibreOffice Writer 的 AI 辅助格式化扩展。它将自�
 
 打开 **Writer.AI > AI Formatter > Setting**，配置服务商、Base URL、模型名称
 和 API Key。默认配置为阿里云百炼的 Kimi K3。API Key 保存在 LibreOffice
-密码容器中，不会写入项目配置文件或应用日志。
+密码容器中，不会写入项目配置文件或应用日志。配置完成后点击“保存配置”，
+以后打开 Writer 会自动读取这些设置。
 
 ## 使用
 

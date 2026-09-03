@@ -1162,6 +1162,7 @@ class MainJob(unohelper.Base, XJobExecutor):
         self._request_callback = None
         self._request_generation = 0
         self._status_indicator = None
+        self._api_key_cache = ""
 
         try:
             self.sm = ctx.getServiceManager()
@@ -1256,19 +1257,29 @@ class MainJob(unohelper.Base, XJobExecutor):
         )
 
     def get_api_key(self):
+        if getattr(self, "_api_key_cache", ""):
+            return self._api_key_cache
+        container = self._password_container()
+        handlers = [None]
         try:
-            handler = self._password_interaction_handler()
-            record = self._password_container().findForName(
-                self.PASSWORD_URL, self.PASSWORD_USER, handler
-            )
-            if record.UserList and record.UserList[0].Passwords:
-                return record.UserList[0].Passwords[0]
+            handlers.append(self._password_interaction_handler())
         except Exception as e:
-            log_to_console(f"Unable to read API key from LibreOffice password storage: {e}")
+            log_to_console(f"Unable to create password interaction handler: {e}")
+        for handler in handlers:
+            try:
+                record = container.findForName(
+                    self.PASSWORD_URL, self.PASSWORD_USER, handler
+                )
+                if record.UserList and record.UserList[0].Passwords:
+                    self._api_key_cache = record.UserList[0].Passwords[0]
+                    return self._api_key_cache
+            except Exception as e:
+                log_to_console(f"Unable to read API key from LibreOffice password storage: {e}")
         return ""
 
     def set_api_key(self, api_key):
         container = self._password_container()
+        self._api_key_cache = api_key or ""
         try:
             container.removePersistent(self.PASSWORD_URL, self.PASSWORD_USER)
         except Exception:
@@ -1281,7 +1292,13 @@ class MainJob(unohelper.Base, XJobExecutor):
                 self.PASSWORD_URL, self.PASSWORD_USER, (api_key,), handler
             )
         except Exception as e:
-            log_to_console(f"Unable to save API key in LibreOffice password storage: {e}")
+            log_to_console(f"Unable to persist API key in LibreOffice password storage: {e}")
+            try:
+                container.add(self.PASSWORD_URL, self.PASSWORD_USER, (api_key,), None)
+                log_to_console("API key saved for the current LibreOffice session.")
+            except Exception as session_error:
+                self._api_key_cache = ""
+                log_to_console(f"Unable to save API key for the current session: {session_error}")
 
     def _message_box(self, target_doc, title, message):
         frame = target_doc.getCurrentController().getFrame()
@@ -1753,7 +1770,11 @@ class MainJob(unohelper.Base, XJobExecutor):
 
             y_pos = HEIGHT - BUTTON_HEIGHT - VERT_MARGIN
             button_start_x = (WIDTH - (BUTTON_WIDTH * 2 + HORI_SEP)) / 2
-            add("btn_ok", "Button", button_start_x, y_pos, BUTTON_WIDTH, BUTTON_HEIGHT, {"PushButtonType": OK, "DefaultButton": True})
+            add("btn_ok", "Button", button_start_x, y_pos, BUTTON_WIDTH, BUTTON_HEIGHT, {
+                "PushButtonType": OK,
+                "DefaultButton": True,
+                "Label": "保存配置 / Save Settings",
+            })
             add("btn_cancel", "Button", button_start_x + BUTTON_WIDTH + HORI_SEP, y_pos, BUTTON_WIDTH, BUTTON_HEIGHT, {"PushButtonType": CANCEL})
 
             log_to_console("All controls added.")
