@@ -939,8 +939,8 @@ class MainJob(unohelper.Base, XJobExecutor):
             result["model"] = preset[0]
             result["api_type"] = preset[1]
             result["endpoint"] = preset[2]
-        if "api_key" in controls:
-            result["api_key"] = controls["api_key"].getModel().Text
+        if "kimi_api_key" in controls:
+            result["kimi_api_key"] = controls["kimi_api_key"].getModel().Text
         return result
 
     def _save_settings(self, result):
@@ -998,9 +998,9 @@ class MainJob(unohelper.Base, XJobExecutor):
                 {"Dropdown": True, "StringItemList": backend_names, "SelectedItems": (current_backend_idx,)})
             
             y_pos += EDIT_HEIGHT + VERT_SEP
-            add("label_api_key", "FixedText", HORI_MARGIN, y_pos + 4, LABEL_WIDTH, LABEL_HEIGHT, {"Label": "API Key:"})
-            controls["api_key"] = add("edit_api_key", "Edit", HORI_MARGIN + LABEL_WIDTH, y_pos,
-                edit_width, EDIT_HEIGHT, {"Text": str(self.get_config("api_key", ""))})
+            add("label_kimi_api_key", "FixedText", HORI_MARGIN, y_pos + 4, LABEL_WIDTH, LABEL_HEIGHT, {"Label": "Kimi API Key:"})
+            controls["kimi_api_key"] = add("edit_kimi_api_key", "Edit", HORI_MARGIN + LABEL_WIDTH, y_pos,
+                edit_width, EDIT_HEIGHT, {"Text": str(self.get_config("kimi_api_key", ""))})
 
             y_pos = HEIGHT - BUTTON_HEIGHT - VERT_MARGIN
             button_start_x = (WIDTH - (BUTTON_WIDTH * 2 + HORI_SEP)) / 2
@@ -1172,8 +1172,8 @@ class MainJob(unohelper.Base, XJobExecutor):
 
                 # 5. AI Process & Execution
                 # Note: Passing target_doc to your formatting logic is CRITICAL
-                api_key = self.get_config("api_key", "") or os.environ.get("KIMI_API_KEY", "")
-                format_request = MainJob.askKimi(user_input, api_key)
+                kimi_api_key = self.get_config("kimi_api_key", "") or os.environ.get("KIMI_API_KEY", "")
+                format_request = MainJob.askKimi(user_input, kimi_api_key)
                 
                 # Make sure your Format class is initialized with the CORRECT doc
                 fmt = Format(self.ctx, target_doc) 
