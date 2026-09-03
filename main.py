@@ -1099,6 +1099,7 @@ class MainJob(unohelper.Base, XJobExecutor):
         self._request_in_progress = False
         self._request_callback = None
         self._request_generation = 0
+        self._status_indicator = None
 
         try:
             self.sm = ctx.getServiceManager()
@@ -1142,6 +1143,29 @@ class MainJob(unohelper.Base, XJobExecutor):
         except Exception as e:
             log_to_console(f"Formatting failed after API response: {e}")
             traceback.print_exc(file=sys.stderr)
+        finally:
+            self._end_status_indicator()
+
+    def _start_status_indicator(self, target_doc):
+        self._end_status_indicator()
+        try:
+            frame = target_doc.getCurrentController().getFrame()
+            indicator = frame.createStatusIndicator()
+            indicator.start("writer.ai: 正在分析", 100)
+            self._status_indicator = indicator
+        except Exception as e:
+            # Headless documents and older frames may not expose a status bar.
+            self._status_indicator = None
+            log_to_console(f"Unable to show request status indicator: {e}")
+
+    def _end_status_indicator(self):
+        indicator = getattr(self, "_status_indicator", None)
+        self._status_indicator = None
+        if indicator is not None:
+            try:
+                indicator.end()
+            except Exception as e:
+                log_to_console(f"Unable to clear request status indicator: {e}")
 
     def _password_container(self):
         return self.sm.createInstanceWithContext(
@@ -1211,6 +1235,7 @@ class MainJob(unohelper.Base, XJobExecutor):
         callback = FormatRequestCallback(self, target_doc, generation)
         self._request_callback = callback
         self._request_in_progress = True
+        self._start_status_indicator(target_doc)
 
         def request_worker():
             try:
@@ -1230,6 +1255,7 @@ class MainJob(unohelper.Base, XJobExecutor):
             return
         self._request_generation += 1
         self._request_in_progress = False
+        self._end_status_indicator()
         log_to_console("Formatting request cancelled; its response will be ignored.")
 
     def get_config(self, key, default):

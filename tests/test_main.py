@@ -110,6 +110,47 @@ class MainLogicTests(unittest.TestCase):
         self.assertFalse(job._request_in_progress)
         self.assertEqual(job._request_generation, 3)
 
+    def test_status_indicator_lifecycle(self):
+        class Indicator:
+            def __init__(self):
+                self.started = None
+                self.ended = False
+
+            def start(self, text, value):
+                self.started = (text, value)
+
+            def end(self):
+                self.ended = True
+
+        class Frame:
+            def __init__(self, indicator):
+                self.indicator = indicator
+
+            def createStatusIndicator(self):
+                return self.indicator
+
+        class Controller:
+            def __init__(self, frame):
+                self.frame = frame
+
+            def getFrame(self):
+                return self.frame
+
+        class Document:
+            def __init__(self, controller):
+                self.controller = controller
+
+            def getCurrentController(self):
+                return self.controller
+
+        indicator = Indicator()
+        job = object.__new__(main.MainJob)
+        job._status_indicator = None
+        job._start_status_indicator(Document(Controller(Frame(indicator))))
+        self.assertEqual(indicator.started, ("writer.ai: 正在分析", 100))
+        job._end_status_indicator()
+        self.assertTrue(indicator.ended)
+
 
 if __name__ == "__main__":
     unittest.main()
