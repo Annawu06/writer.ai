@@ -5,11 +5,13 @@ import json
 import os
 import traceback
 import sys # To print to stderr
+import threading
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from com.sun.star.task import XJobExecutor
 from com.sun.star.awt import MessageBoxButtons as MSG_BUTTONS
 from com.sun.star.awt import XActionListener, XItemListener
+from com.sun.star.awt import XCallback
 from com.sun.star.awt.PosSize import POS, SIZE, POSSIZE
 from com.sun.star.awt.PushButtonType import OK, CANCEL
 from com.sun.star.util.MeasureUnit import TWIP
@@ -660,11 +662,24 @@ def apply_styles(fmt_instance, target_cursor, line_style_dict):
                 log_to_console(f"Error executing {operation} on cursor: {e}")
                 
                 
+class FormatRequestCallback(unohelper.Base, XCallback):
+    """Move the completed background request back onto LibreOffice's UI queue."""
+
+    def __init__(self, job, target_doc):
+        self.job = job
+        self.target_doc = target_doc
+
+    def notify(self, data):
+        self.job._finish_format_request(self.target_doc, data)
+
+
 class MainJob(unohelper.Base, XJobExecutor):
     def __init__(self, ctx):
         log_to_console("MainJob.__init__ called.")
 
         self.ctx = ctx
+        self._request_in_progress = False
+        self._request_callback = None
 
         try:
             self.sm = ctx.getServiceManager()
@@ -677,6 +692,44 @@ class MainJob(unohelper.Base, XJobExecutor):
         except Exception as e:
             log_to_console(f"Failed to initialize Desktop: {e}")
             raise
+
+    def _finish_format_request(self, target_doc, result_json):
+        self._request_in_progress = False
+        try:
+            format_request = json.loads(result_json)
+            if not format_request:
+                log_to_console("Formatting was not completed because the model returned no instructions.")
+                return
+            fmt = Format(self.ctx, target_doc)
+            execute_format_request(format_request, fmt)
+            log_to_console("Formatting completed successfully.")
+        except Exception as e:
+            log_to_console(f"Formatting failed after API response: {e}")
+            traceback.print_exc(file=sys.stderr)
+
+    def _start_format_request(self, target_doc, query, api_key, model, endpoint):
+        if self._request_in_progress:
+            log_to_console("A formatting request is already running.")
+            return
+
+        async_callback = self.sm.createInstanceWithContext(
+            "com.sun.star.awt.AsyncCallback", self.ctx
+        )
+        callback = FormatRequestCallback(self, target_doc)
+        self._request_callback = callback
+        self._request_in_progress = True
+
+        def request_worker():
+            try:
+                result = self.call_model(query, api_key, model, endpoint)
+                result_json = json.dumps(result or {})
+            except Exception as e:
+                log_to_console(f"Background model request failed: {e}")
+                result_json = "{}"
+            async_callback.addCallback(callback, result_json)
+
+        threading.Thread(target=request_worker, name="writer-ai-api", daemon=True).start()
+        log_to_console("Formatting request started in background.")
 
     def get_config(self, key, default):
         name_file = "writerai.json"
@@ -1205,21 +1258,11 @@ class MainJob(unohelper.Base, XJobExecutor):
                     log_to_console("User cancelled input.")
                     return
 
-                # 5. AI Process & Execution
-                # Note: Passing target_doc to your formatting logic is CRITICAL
+                # 5. Start the API request without blocking LibreOffice's UI thread.
                 api_key = self.get_config("api_key", "") or os.environ.get("WRITER_AI_API_KEY", "")
                 model = self.get_config("model", "kimi-k3")
                 endpoint = self.get_config("endpoint", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-                format_request = MainJob.call_model(user_input, api_key, model, endpoint)
-                
-                # Make sure your Format class is initialized with the CORRECT doc
-                fmt = Format(self.ctx, target_doc) 
-                
-                if format_request:
-                    execute_format_request(format_request, fmt)
-                    log_to_console("Formatting completed successfully.")
-                else:
-                    log_to_console("Formatting was not completed because the Kimi request failed or returned no instructions.")
+                self._start_format_request(target_doc, user_input, api_key, model, endpoint)
 
             except Exception as e:
                 log_to_console("--- EXCEPTION in trigger(format) ---")
