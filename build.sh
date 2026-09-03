@@ -15,6 +15,10 @@ echo "Creating package ${EXTENSION_NAME}.oxt..."
 zip -r "${EXTENSION_NAME}.oxt" description.xml Addons.xcu main.py META-INF assets description
 
 if [ $? -eq 0 ]; then
+    if unzip -Z1 "${EXTENSION_NAME}.oxt" | rg -qi '(^|/)(AGENTS?\.md|task\.md|mao[^/]*)$|(^|/)Select$'; then
+        echo "Error: release package contains a private file."
+        exit 1
+    fi
     echo "Package created successfully: ${EXTENSION_NAME}.oxt"
     echo ""
     echo "To install:"

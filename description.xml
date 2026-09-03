@@ -4,7 +4,7 @@
   xmlns:l = "http://libreoffice.org/extensions/description/2011" 
   xmlns:xlink="http://www.w3.org/1999/xlink">
   <identifier value="org.extension.writerai"/>
-  <version value="0.0.2"/>
+  <version value="1.0.0"/>
   <publisher>
     <name xlink:href="mailto:anna.wu.0212@gmail.com">Anna.Wu</name>
   </publisher>
