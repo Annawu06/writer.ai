@@ -85,13 +85,14 @@ TABLE_KEYS = {
     "first_column_bold", "zebra", "zebra_background", "row_height",
     "border_color", "border_width", "column_widths",
     "merge_cells", "auto_align",
+    "caption", "title", "number", "caption_prefix",
 }
 
 
 def _valid_value(key, value):
     if key in {"bold", "italic", "remove_highlight", "clear_format", "title", "body", "insert_before", "header", "format_header", "header_bold", "repeat_header", "first_column_bold", "zebra", "auto_align"}:
         return isinstance(value, bool)
-    if key in {"font_size", "first_line_indent", "row_height", "border_width"}:
+    if key in {"font_size", "first_line_indent", "row_height", "border_width", "number"}:
         return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
     if key == "column_widths":
         return (
@@ -110,7 +111,7 @@ def _valid_value(key, value):
                 for item in value
             )
         )
-    if key in {"underline", "font_color", "font_name", "font_family", "highlight", "replace_text", "insert_text", "paragraph_style", "cell_background", "table_background", "header_background", "zebra_background", "border_color", "align"}:
+    if key in {"underline", "font_color", "font_name", "font_family", "highlight", "replace_text", "insert_text", "paragraph_style", "cell_background", "table_background", "header_background", "zebra_background", "border_color", "align", "caption", "title", "caption_prefix"}:
         return isinstance(value, (str, int, float, bool))
     if key.startswith("align_"):
         return isinstance(value, bool)
@@ -817,6 +818,39 @@ class Format:
         cursor.gotoEnd(True)
         return cursor
 
+    def _insert_table_caption(self, table, options):
+        caption = options.get("caption", options.get("title"))
+        if not isinstance(caption, str) or not caption.strip():
+            return
+        try:
+            table_name = getattr(table, "Name", "")
+            names = self._table_names()
+            table_number = names.index(table_name) + 1 if table_name in names else 1
+            number = options.get("number", table_number)
+            prefix = str(options.get("caption_prefix", "表")).strip() or "表"
+            caption_text = f"{prefix}{number}：{caption.strip()}\n"
+            if f"{prefix}{number}：" in self.doc.Text.String:
+                return
+
+            anchor = table.getAnchor()
+            try:
+                cursor = self.doc.Text.createTextCursorByRange(anchor)
+                cursor.collapseToStart()
+            except Exception:
+                # A table in the document's only empty paragraph has no usable
+                # outer text range; the document cursor still inserts before it.
+                cursor = self.doc.Text.createTextCursor()
+                cursor.gotoStart(False)
+            self.doc.Text.insertString(cursor, caption_text, False)
+            cursor.gotoStartOfParagraph(False)
+            cursor.gotoEndOfParagraph(True)
+            style_name = self.available_paragraph_style("Caption")
+            if style_name:
+                cursor.ParaStyleName = style_name
+            cursor.ParaAdjust = CENTER
+        except Exception as e:
+            log_to_console(f"Error inserting table caption: {e}")
+
     def _format_table_cell(self, cell, options, is_header, is_first_column=False):
         cell_cursor = cell.createTextCursor()
         cell_cursor.gotoEnd(True)
@@ -864,6 +898,7 @@ class Format:
 
     def format_table(self, table, options):
         """Format all cells and optionally the first row as a header."""
+        self._insert_table_caption(table, options)
         for merge in options.get("merge_cells", []):
             try:
                 table_cursor = table.createCursorByCellName(merge["start"])
@@ -1444,7 +1479,9 @@ class MainJob(unohelper.Base, XJobExecutor):
                                "column_widths" (percentage list summing to 100),
                                "merge_cells" (list of {"start": "A1", "end": "B1"}),
                                "auto_align" (true for automatic numeric/date alignment),
-                               "align" (left/right/center/justify), "font_name", "font_size", and "font_color".
+                               "align" (left/right/center/justify), "font_name", "font_size", and "font_color",
+                               "caption"/"title" (table title text), "number" (table number), and
+                               "caption_prefix" (default "表").
 
                             # 5. Text Insertion & Spatial Localization Protocol
                             If the user wants to add, insert, or format text, follow these STRICT structural rules:
