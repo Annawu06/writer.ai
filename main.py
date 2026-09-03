@@ -1,12 +1,12 @@
 import uno
 import re
 import unohelper
-import dashscope # 需安装：pip install dashscope
-from http import HTTPStatus
 import json
 import os
 import traceback
 import sys # To print to stderr
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 from com.sun.star.task import XJobExecutor
 from com.sun.star.awt import MessageBoxButtons as MSG_BUTTONS
 from com.sun.star.awt import XActionListener, XItemListener
@@ -709,19 +709,17 @@ class MainJob(unohelper.Base, XJobExecutor):
         return bool(value)
 
     BACKEND_PRESETS = [
-        ("Gemini 3 Pro", "chat", "https://generativelanguage.googleapis.com/v1beta"),
-        ("Gemini 3 Flash", "chat", "https://generativelanguage.googleapis.com/v1beta"),
-        ("QWen", "chat", "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation"),
+        ("Kimi K3", "chat", "https://api.moonshot.ai/v1"),
     ]
     
     @staticmethod
-    def askQwen(query,api_key = "sk-f361ac282d2044d1a9523413ee925382"):
+    def askKimi(query, api_key=None):
         """
-    使用 Qwen 大模型将自然语言指令转换为 LibreOffice Writer 的结构化配置字典。
+    使用 Kimi K3 将自然语言指令转换为 LibreOffice Writer 的结构化配置字典。
     
     Args:
         user_input: 用户输入的自然语言，如 "将第一页第一行进行黄色高亮标记"
-        api_key: 阿里云 DashScope 的 API Key
+        api_key: Kimi API Key
         
     Returns:
         dict: 结构化后的指令字典。若解析失败则返回空字典。
@@ -871,23 +869,35 @@ class MainJob(unohelper.Base, XJobExecutor):
                   """
                 
         )
-        # 2. 调用 Qwen 模型 (以 qwen-turbo 为例，也可根据需求换成 qwen-max)
-        dashscope.api_key = api_key
-        #print("1")
-        response = dashscope.Generation.call(
-            model=dashscope.Generation.Models.qwen_turbo,
-            messages=[
-                {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': query}
-            ],
-            result_format='message'
-        )
-        #print("2")
+        if not api_key:
+            api_key = os.environ.get("KIMI_API_KEY", "")
+        if not api_key:
+            log_to_console("Kimi API key is not configured.")
+            return {}
 
-        # 3. 处理响应结果
-        if response.status_code == HTTPStatus.OK:
-            #print("3")
-            content = response.output.choices[0].message.content
+        payload = json.dumps({
+            "model": "kimi-k3",
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": query},
+            ],
+            "stream": False,
+            "reasoning_effort": "low",
+        }).encode("utf-8")
+        request = Request(
+            "https://api.moonshot.ai/v1/chat/completions",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+
+        try:
+            with urlopen(request, timeout=120) as response:
+                response_data = json.loads(response.read().decode("utf-8"))
+            content = response_data["choices"][0]["message"]["content"]
             print(f"content:{content}")
             try:
                 # 1. 清理字符串
@@ -902,9 +912,13 @@ class MainJob(unohelper.Base, XJobExecutor):
             except Exception as e:
                 log_to_console(f"JSON Parsing Error: {e}")
                 return None
-        else:
-            print(f"API 请求失败: {response.code} - {response.message}")
-            return {}     
+        except HTTPError as e:
+            error_body = e.read().decode("utf-8", errors="replace")
+            log_to_console(f"Kimi API 请求失败: HTTP {e.code}: {error_body}")
+            return {}
+        except (URLError, KeyError, IndexError, json.JSONDecodeError) as e:
+            log_to_console(f"Kimi API 调用失败: {e}")
+            return {}
 
 
     
@@ -1158,7 +1172,8 @@ class MainJob(unohelper.Base, XJobExecutor):
 
                 # 5. AI Process & Execution
                 # Note: Passing target_doc to your formatting logic is CRITICAL
-                format_request = MainJob.askQwen(user_input)
+                api_key = self.get_config("api_key", "") or os.environ.get("KIMI_API_KEY", "")
+                format_request = MainJob.askKimi(user_input, api_key)
                 
                 # Make sure your Format class is initialized with the CORRECT doc
                 fmt = Format(self.ctx, target_doc) 
