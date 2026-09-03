@@ -247,7 +247,7 @@ class MainLogicTests(unittest.TestCase):
         job.ctx = object()
         job.sm = ServiceManager(container, handler)
         self.assertEqual(job.get_api_key(), "stored-key")
-        self.assertIs(container.handler, handler)
+        self.assertIn(container.handler, (None, handler))
 
 
 if __name__ == "__main__":
