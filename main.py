@@ -84,6 +84,7 @@ TABLE_KEYS = {
     "font_family", "font_size", "font_color", "repeat_header",
     "first_column_bold", "zebra", "zebra_background", "row_height",
     "border_color", "border_width", "column_widths",
+    "merge_cells",
 }
 
 
@@ -98,6 +99,16 @@ def _valid_value(key, value):
             and len(value) >= 2
             and all(isinstance(item, (int, float)) and not isinstance(item, bool) and item > 0 for item in value)
             and abs(sum(value) - 100) < 0.01
+        )
+    if key == "merge_cells":
+        return (
+            isinstance(value, list)
+            and all(
+                isinstance(item, dict)
+                and isinstance(item.get("start"), str)
+                and isinstance(item.get("end"), str)
+                for item in value
+            )
         )
     if key in {"underline", "font_color", "font_name", "font_family", "highlight", "replace_text", "insert_text", "paragraph_style", "cell_background", "table_background", "header_background", "zebra_background", "border_color", "align"}:
         return isinstance(value, (str, int, float, bool))
@@ -839,6 +850,14 @@ class Format:
 
     def format_table(self, table, options):
         """Format all cells and optionally the first row as a header."""
+        for merge in options.get("merge_cells", []):
+            try:
+                table_cursor = table.createCursorByCellName(merge["start"])
+                table_cursor.gotoCellByName(merge["end"], True)
+                table_cursor.mergeRange()
+            except Exception as e:
+                log_to_console(f"Error merging table cells: {e}")
+
         header = options.get("header", options.get("format_header", False))
         if options.get("repeat_header", False):
             table.RepeatHeadline = True
@@ -1362,6 +1381,7 @@ class MainJob(unohelper.Base, XJobExecutor):
                                "header_background", "header_bold", "repeat_header", "first_column_bold",
                                "zebra", "zebra_background", "row_height", "border_color", "border_width",
                                "column_widths" (percentage list summing to 100),
+                               "merge_cells" (list of {"start": "A1", "end": "B1"}),
                                "align" (left/right/center/justify), "font_name", "font_size", and "font_color".
 
                             # 5. Text Insertion & Spatial Localization Protocol
