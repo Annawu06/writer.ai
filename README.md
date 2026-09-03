@@ -70,7 +70,7 @@ See [README.zh-CN.md](README.zh-CN.md) for the Chinese documentation and
 
 Copyright (c) 2026 Anna Wu. All rights reserved.
 
-This project is not open source. No permission is granted to copy, modify,
-redistribute, sublicense, or use the source code or release package for
-commercial purposes without prior written permission from the copyright owner.
-See [LICENSE](LICENSE) for the full notice.
+The official release package may be installed and used for personal,
+non-commercial purposes. Copying source code, modification, redistribution,
+rebranding, resale, and commercial use require prior written permission. See
+[LICENSE](LICENSE) for the full notice.
