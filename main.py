@@ -1183,10 +1183,18 @@ class MainJob(unohelper.Base, XJobExecutor):
             if isinstance(response, dict) and "request" in response:
                 format_request = response.get("request", {})
                 validation_warnings = response.get("warnings", [])
+                request_errors = response.get("errors", [])
             else:
                 format_request = response
                 validation_warnings = []
+                request_errors = []
             if not format_request:
+                if request_errors:
+                    self._message_box(
+                        target_doc,
+                        "writer.ai 请求失败",
+                        "无法完成格式化请求：\n\n" + "\n".join(request_errors),
+                    ).execute()
                 log_to_console("Formatting was not completed because the model returned no instructions.")
                 return
 
@@ -1316,15 +1324,24 @@ class MainJob(unohelper.Base, XJobExecutor):
 
         def request_worker():
             validation_report = []
+            request_errors = []
             try:
-                result = self.call_model(query, api_key, model, endpoint, validation_report)
+                result = self.call_model(
+                    query, api_key, model, endpoint, validation_report, request_errors
+                )
                 result_json = json.dumps({
                     "request": result or {},
                     "warnings": validation_report,
+                    "errors": request_errors,
                 })
             except Exception as e:
                 log_to_console(f"Background model request failed: {e}")
-                result_json = json.dumps({"request": {}, "warnings": validation_report})
+                request_errors.append("后台请求异常，请稍后重试。")
+                result_json = json.dumps({
+                    "request": {},
+                    "warnings": validation_report,
+                    "errors": request_errors,
+                })
             async_callback.addCallback(callback, result_json)
 
         threading.Thread(target=request_worker, name="writer-ai-api", daemon=True).start()
@@ -1388,7 +1405,7 @@ class MainJob(unohelper.Base, XJobExecutor):
     ]
     
     @staticmethod
-    def call_model(query, api_key, model, endpoint, validation_report=None):
+    def call_model(query, api_key, model, endpoint, validation_report=None, error_report=None):
         """
     使用 OpenAI 兼容的 Chat Completions 接口生成格式化指令。
     
@@ -1566,6 +1583,8 @@ class MainJob(unohelper.Base, XJobExecutor):
             api_key = os.environ.get("WRITER_AI_API_KEY", "")
         if not api_key or not model or not endpoint:
             log_to_console("API key, model, and endpoint must be configured.")
+            if error_report is not None:
+                error_report.append("请先在设置中填写 API Key、模型和接口地址。")
             return {}
 
         endpoint = endpoint.rstrip("/")
@@ -1607,13 +1626,19 @@ class MainJob(unohelper.Base, XJobExecutor):
                 return data
             except Exception as e:
                 log_to_console(f"JSON Parsing Error: {e}")
+                if error_report is not None:
+                    error_report.append("模型返回的格式化指令无法解析，请重试。")
                 return None
         except HTTPError as e:
             error_body = e.read().decode("utf-8", errors="replace")
             log_to_console(f"Model API 请求失败: HTTP {e.code}: {error_body}")
+            if error_report is not None:
+                error_report.append(f"模型服务返回 HTTP {e.code}，请检查 API Key、模型和接口地址。")
             return {}
         except (URLError, KeyError, IndexError, json.JSONDecodeError) as e:
             log_to_console(f"Model API 调用失败: {e}")
+            if error_report is not None:
+                error_report.append("无法连接模型服务或服务返回了无效响应，请检查网络和配置。")
             return {}
 
 

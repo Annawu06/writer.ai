@@ -86,21 +86,25 @@ class MainLogicTests(unittest.TestCase):
         self.assertEqual(result, {"all_pages": {"bold": True}})
 
     def test_network_failure_returns_empty_request(self):
+        errors = []
         with patch.object(main, "urlopen", side_effect=main.URLError("offline")):
             result = main.MainJob.call_model(
-                "test", "test-key", "test-model", "https://example.test/v1"
+                "test", "test-key", "test-model", "https://example.test/v1", error_report=errors
             )
         self.assertEqual(result, {})
+        self.assertTrue(errors)
 
     def test_invalid_model_json_returns_no_request(self):
         def fake_urlopen(request, timeout):
             return FakeResponse({"choices": [{"message": {"content": "not json"}}]})
 
+        errors = []
         with patch.object(main, "urlopen", fake_urlopen):
             result = main.MainJob.call_model(
-                "test", "test-key", "test-model", "https://example.test/v1"
+                "test", "test-key", "test-model", "https://example.test/v1", error_report=errors
             )
         self.assertIsNone(result)
+        self.assertTrue(errors)
 
     def test_model_validation_report_lists_ignored_properties(self):
         payload = {
