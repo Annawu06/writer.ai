@@ -438,6 +438,81 @@ class Format:
         cursor.CharBackColor = -1
 
         cursor.CharHeight = 12
+
+    # ------------------------------------------------
+    # Paragraph styles and tables
+    # ------------------------------------------------
+
+    def set_paragraph_style(self, cursor, style_name):
+        """Apply a Writer paragraph style to all paragraphs in the cursor."""
+        if cursor and style_name:
+            cursor.ParaStyleName = style_name
+
+    def format_title(self, cursor, value=True):
+        if value is not False:
+            self.set_paragraph_style(cursor, "Title")
+
+    def format_body(self, cursor, value=True):
+        if value is not False:
+            self.set_paragraph_style(cursor, "Text Body")
+
+    def _table_names(self):
+        return list(self.doc.TextTables.getElementNames())
+
+    def get_tables(self, table_key):
+        """Resolve table_1/table_all or a native Writer table name."""
+        names = self._table_names()
+        if table_key in ("table_all", "all"):
+            return [self.doc.TextTables.getByName(name) for name in names]
+        if table_key in names:
+            return [self.doc.TextTables.getByName(table_key)]
+
+        match = re.fullmatch(r"table_(\d+)", str(table_key))
+        if match:
+            index = int(match.group(1)) - 1
+            if 0 <= index < len(names):
+                return [self.doc.TextTables.getByName(names[index])]
+        return []
+
+    @staticmethod
+    def _cell_row(cell_name):
+        match = re.search(r"(\d+)$", cell_name)
+        return int(match.group(1)) if match else None
+
+    def _format_table_cell(self, cell, options, is_header):
+        cell_cursor = cell.createTextCursor()
+        cell_cursor.gotoEnd(True)
+
+        background = options.get("header_background" if is_header else "cell_background")
+        if background is None:
+            background = options.get("table_background")
+        if background is not None:
+            cell.BackColor = self.parse_color(background)
+            cell.BackTransparent = False
+
+        if is_header and options.get("header_bold", True):
+            cell_cursor.CharWeight = BOLD
+        if "font_name" in options or "font_family" in options:
+            self.set_font_name(cell_cursor, options.get("font_name", options.get("font_family")))
+        if "font_size" in options:
+            self.set_font_size(cell_cursor, options["font_size"])
+        if "font_color" in options:
+            self.set_font_color(cell_cursor, options["font_color"])
+
+        alignment = str(options.get("align", "")).lower()
+        alignments = {"left": LEFT, "right": RIGHT, "center": CENTER, "justify": BLOCK}
+        if alignment in alignments:
+            cell_cursor.ParaAdjust = alignments[alignment]
+
+    def format_table(self, table, options):
+        """Format all cells and optionally the first row as a header."""
+        header = options.get("header", options.get("format_header", False))
+        for cell_name in table.getCellNames():
+            self._format_table_cell(
+                table.getCellByName(cell_name),
+                options,
+                bool(header and self._cell_row(cell_name) == 1),
+            )
             
         
     
@@ -447,6 +522,17 @@ def execute_format_request(format_request, fmt):
         return
 
     for page_key, page_value in format_request.items():
+        if page_key == "tables":
+            for table_key, table_options in page_value.items():
+                for table in fmt.get_tables(table_key):
+                    fmt.format_table(table, table_options)
+            continue
+
+        if str(page_key).startswith("table_"):
+            for table in fmt.get_tables(page_key):
+                fmt.format_table(table, page_value)
+            continue
+
         # --- 核心修改点 ---
         # 如果 key 是 selection，或者 page_value 包含特定指示
         if page_key == "selection":
@@ -514,7 +600,10 @@ def apply_styles(fmt_instance, target_cursor, line_style_dict):
         "align_justify": "align_justify",
         "replace_text": "replace_selection",
         "insert_text": "insert_text_at_cursor", # 插入文本
-        "clear_format": "clear_format"
+        "clear_format": "clear_format",
+        "title": "format_title",
+        "body": "format_body",
+        "paragraph_style": "set_paragraph_style"
     }
 
     # 特殊处理：替换文本
@@ -543,7 +632,8 @@ def apply_styles(fmt_instance, target_cursor, line_style_dict):
                 # 定义不需要参数的方法名
                 no_param_actions = [
                     "bold", "italic", "clear_format", "remove_highlight",
-                    "align_center", "align_left", "align_right", "align_justify"
+                    "align_center", "align_left", "align_right", "align_justify",
+                    "title", "body"
                 ]
                 
                 if operation in no_param_actions:
@@ -708,11 +798,16 @@ class MainJob(unohelper.Base, XJobExecutor):
                               *Do not split "bold" into font weight when it appears inside underline style names.*
 
                             # 4. Property Names (MUST MATCH BACKEND)
-                            You must ONLY use these property keys:
+                            You may ONLY use these property keys:
                             1. Styles: "bold" (bool), "italic" (bool), "underline" (str/bool), "clear_format" (true).
                             2. Fonts: "font_name" (semantic/literal), "font_size" (number), "font_color" (Hex).
                             3. Highlights: "highlight" (Hex or true for default), "remove_highlight" (true).
                             4. Alignment: "align_center", "align_left", "align_right", "align_justify" (all bool).
+                            5. Paragraph styles: "title": true, "body": true, or "paragraph_style": "Title" / "Text Body".
+                            6. Tables: "tables": {"table_1": { ... }} or a top-level "table_1": { ... }.
+                               Table properties: "cell_background", "table_background", "header": true,
+                               "header_background", "header_bold", "align" (left/right/center/justify),
+                               "font_name", "font_size", and "font_color".
 
                             # 5. Text Insertion & Spatial Localization Protocol
                             If the user wants to add, insert, or format text, follow these STRICT structural rules:
@@ -769,6 +864,9 @@ class MainJob(unohelper.Base, XJobExecutor):
 
                             - User: "Set the highlight of page 2 line 4 to Sakura Pink"
                               Assistant: {"page_2": {"line_4": {"highlight": "FFB7C5"}}}
+
+                            - User: "Format the first table with a gray header and centered cells"
+                              Assistant: {"tables": {"table_1": {"header": true, "header_background": "D9E2F3", "align": "center"}}}
 
                   """
                 

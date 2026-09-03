@@ -34,3 +34,11 @@ Paragraph
    
 
 Remove all format ✅
+
+
+
+What i need to do :
+
+1. achieve  formating title and paragraph ✅
+2. table formating ✅
+3. thinking about
