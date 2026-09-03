@@ -2,6 +2,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 
@@ -165,6 +166,28 @@ class WriterDocumentTests(unittest.TestCase):
     def test_empty_document(self):
         paragraphs = list(self.formatter._paragraphs())
         self.assertTrue(all(not paragraph.String for paragraph in paragraphs))
+
+    def test_async_callback_returns_to_writer(self):
+        received = []
+
+        class Receiver:
+            def _finish_format_request(self, target_doc, data, generation):
+                received.append((target_doc, data, generation))
+
+        callback = main.FormatRequestCallback(Receiver(), self.doc, 7)
+        async_callback = self.context.ServiceManager.createInstanceWithContext(
+            "com.sun.star.awt.AsyncCallback", self.context
+        )
+        worker = threading.Thread(
+            target=lambda: async_callback.addCallback(callback, "callback-ok")
+        )
+        worker.start()
+        worker.join(timeout=2)
+        for _ in range(20):
+            if received:
+                break
+            time.sleep(0.1)
+        self.assertEqual(received, [(self.doc, "callback-ok", 7)])
 
     def test_docx_round_trip(self):
         path = os.path.join(self.profile, "round-trip.docx")

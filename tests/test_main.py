@@ -100,7 +100,7 @@ class MainLogicTests(unittest.TestCase):
             self.assertEqual(body["model"], "test-model")
             self.assertFalse(body["stream"])
             self.assertEqual(body["max_completion_tokens"], 512)
-            self.assertEqual(timeout, 60)
+            self.assertEqual(timeout, main.MainJob.REQUEST_TIMEOUT)
             return FakeResponse(payload)
 
         with patch.object(main, "urlopen", fake_urlopen):

@@ -1278,6 +1278,7 @@ class BackendItemListener(unohelper.Base, XItemListener):
 class MainJob(unohelper.Base, XJobExecutor):
     PASSWORD_URL = "vnd.writer.ai/api"
     PASSWORD_USER = "api_key"
+    REQUEST_TIMEOUT = 30
 
     def __init__(self, ctx):
         log_to_console("MainJob.__init__ called.")
@@ -1289,6 +1290,7 @@ class MainJob(unohelper.Base, XJobExecutor):
         self._request_generation = 0
         self._status_indicator = None
         self._api_key_cache = ""
+        self._request_timeout_timer = None
 
         try:
             self.sm = ctx.getServiceManager()
@@ -1309,12 +1311,17 @@ class MainJob(unohelper.Base, XJobExecutor):
         self._request_in_progress = False
         self._request_callback = None
         self._async_callback = None
+        if self._request_timeout_timer is not None:
+            self._request_timeout_timer.cancel()
+            self._request_timeout_timer = None
         try:
             response = json.loads(result_json)
             if isinstance(response, dict) and "request" in response:
                 format_request = response.get("request", {})
                 validation_warnings = response.get("warnings", [])
                 request_errors = response.get("errors", [])
+                if response.get("timeout"):
+                    self._request_generation += 1
             else:
                 format_request = response
                 validation_warnings = []
@@ -1471,6 +1478,23 @@ class MainJob(unohelper.Base, XJobExecutor):
         self._async_callback = async_callback
         self._request_in_progress = True
         self._start_status_indicator(target_doc)
+
+        def request_timeout():
+            try:
+                async_callback.addCallback(callback, json.dumps({
+                    "request": {},
+                    "warnings": [],
+                    "errors": ["The model request timed out after 30 seconds."],
+                    "timeout": True,
+                }))
+            except Exception as e:
+                log_to_console(f"Unable to deliver request timeout to Writer: {e}")
+
+        self._request_timeout_timer = threading.Timer(
+            self.REQUEST_TIMEOUT + 1, request_timeout
+        )
+        self._request_timeout_timer.daemon = True
+        self._request_timeout_timer.start()
 
         def request_worker():
             validation_report = []
@@ -1774,7 +1798,7 @@ their property meaning. Never include explanations or Markdown.
         )
 
         try:
-            with urlopen(request, timeout=60) as response:
+            with urlopen(request, timeout=MainJob.REQUEST_TIMEOUT) as response:
                 response_data = json.loads(response.read().decode("utf-8"))
             content = response_data["choices"][0]["message"]["content"]
             try:
