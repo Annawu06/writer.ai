@@ -117,39 +117,47 @@ def _valid_value(key, value):
     return False
 
 
-def validate_style(style, allowed_keys):
+def _validation_issue(report, message):
+    if report is not None:
+        report.append(message)
+    log_to_console(message)
+
+
+def validate_style(style, allowed_keys, report=None):
     if not isinstance(style, dict):
+        _validation_issue(report, "Ignoring formatting properties because the value is not an object")
         return {}
     clean_style = {}
     for key, value in style.items():
         if key not in allowed_keys:
-            log_to_console(f"Ignoring unsupported formatting property: {key}")
+            _validation_issue(report, f"Ignoring unsupported formatting property: {key}")
             continue
         if _valid_value(key, value):
             clean_style[key] = value
         else:
-            log_to_console(f"Ignoring invalid value for formatting property: {key}")
+            _validation_issue(report, f"Ignoring invalid value for formatting property: {key}")
     return clean_style
 
 
-def validate_format_request(request):
+def validate_format_request(request, report=None):
     """Keep only known Writer scopes and properties before document mutation."""
     if not isinstance(request, dict):
+        _validation_issue(report, "Formatting response must be a JSON object")
         return {}
 
     clean_request = {}
     for scope, value in request.items():
         if scope in {"selection", "all_pages", "document", "entire_doc"}:
-            clean_style = validate_style(value, FORMAT_KEYS)
+            clean_style = validate_style(value, FORMAT_KEYS, report)
             if clean_style:
                 clean_request[scope] = clean_style
         elif re.fullmatch(r"paragraph_\d+", str(scope)):
-            clean_style = validate_style(value, FORMAT_KEYS)
+            clean_style = validate_style(value, FORMAT_KEYS, report)
             if clean_style:
                 clean_request[scope] = clean_style
         elif scope == "paragraph_text":
             if isinstance(value, dict) and isinstance(value.get("text"), str):
-                clean_style = validate_style(value.get("format", {}), FORMAT_KEYS)
+                clean_style = validate_style(value.get("format", {}), FORMAT_KEYS, report)
                 if clean_style:
                     clean_request[scope] = {"text": value["text"], "format": clean_style}
         elif scope == "paragraphs":
@@ -158,11 +166,11 @@ def validate_format_request(request):
             paragraphs = {}
             for paragraph_scope, paragraph_style in value.items():
                 if re.fullmatch(r"paragraph_\d+", str(paragraph_scope)):
-                    clean_style = validate_style(paragraph_style, FORMAT_KEYS)
+                    clean_style = validate_style(paragraph_style, FORMAT_KEYS, report)
                     if clean_style:
                         paragraphs[paragraph_scope] = clean_style
                 elif paragraph_scope == "contains" and isinstance(paragraph_style, dict) and isinstance(paragraph_style.get("text"), str):
-                    clean_style = validate_style(paragraph_style.get("format", {}), FORMAT_KEYS)
+                    clean_style = validate_style(paragraph_style.get("format", {}), FORMAT_KEYS, report)
                     if clean_style:
                         paragraphs[paragraph_scope] = {"text": paragraph_style["text"], "format": clean_style}
             if paragraphs:
@@ -179,7 +187,7 @@ def validate_format_request(request):
                     if role_style is True:
                         structure[role] = True
                     elif isinstance(role_style, dict):
-                        clean_style = validate_style(role_style, FORMAT_KEYS)
+                        clean_style = validate_style(role_style, FORMAT_KEYS, report)
                         if clean_style:
                             structure[role] = clean_style
             if len(structure) > 1 or any(role in structure for role in {"title", "heading_1", "heading_2", "body"}):
@@ -194,12 +202,12 @@ def validate_format_request(request):
                         key: item for key, item in table_style.items()
                         if key != "cells"
                     } if isinstance(table_style, dict) else table_style
-                    clean_style = validate_style(table_base, TABLE_KEYS)
+                    clean_style = validate_style(table_base, TABLE_KEYS, report)
                     if isinstance(table_style, dict) and isinstance(table_style.get("cells"), dict):
                         cells = {}
                         for cell_scope, cell_style in table_style["cells"].items():
                             if re.fullmatch(r"row_\d+_col_\d+", str(cell_scope)):
-                                cell_clean_style = validate_style(cell_style, FORMAT_KEYS)
+                                cell_clean_style = validate_style(cell_style, FORMAT_KEYS, report)
                                 if cell_clean_style:
                                     cells[cell_scope] = cell_clean_style
                         if cells:
@@ -214,17 +222,17 @@ def validate_format_request(request):
             lines = {}
             for line_scope, line_style in value.items():
                 if line_scope in {"line_all", "all"} or re.fullmatch(r"line_\d+", str(line_scope)):
-                    clean_style = validate_style(line_style, FORMAT_KEYS)
+                    clean_style = validate_style(line_style, FORMAT_KEYS, report)
                     if clean_style:
                         lines[line_scope] = clean_style
             if lines:
                 clean_request[scope] = lines
         elif re.fullmatch(r"table_\d+", str(scope)):
-            clean_style = validate_style(value, TABLE_KEYS)
+            clean_style = validate_style(value, TABLE_KEYS, report)
             if clean_style:
                 clean_request[scope] = clean_style
         else:
-            log_to_console(f"Ignoring unsupported formatting scope: {scope}")
+            _validation_issue(report, f"Ignoring unsupported formatting scope: {scope}")
     return clean_request
 
 
@@ -1119,12 +1127,18 @@ class MainJob(unohelper.Base, XJobExecutor):
             return
         self._request_in_progress = False
         try:
-            format_request = json.loads(result_json)
+            response = json.loads(result_json)
+            if isinstance(response, dict) and "request" in response:
+                format_request = response.get("request", {})
+                validation_warnings = response.get("warnings", [])
+            else:
+                format_request = response
+                validation_warnings = []
             if not format_request:
                 log_to_console("Formatting was not completed because the model returned no instructions.")
                 return
 
-            if not self._confirm_format_preview(target_doc, format_request):
+            if not self._confirm_format_preview(target_doc, format_request, validation_warnings):
                 log_to_console("Formatting cancelled after preview.")
                 return
 
@@ -1135,7 +1149,9 @@ class MainJob(unohelper.Base, XJobExecutor):
                 execute_format_request(format_request, fmt)
             finally:
                 undo_manager.leaveUndoContext()
-            log_to_console("Formatting completed successfully.")
+            log_to_console(
+                f"Formatting completed successfully: {count_format_operations(format_request)} operations."
+            )
 
             if self._confirm_undo(target_doc):
                 undo_manager.undo()
@@ -1207,7 +1223,7 @@ class MainJob(unohelper.Base, XJobExecutor):
         toolkit = self.sm.createInstanceWithContext("com.sun.star.awt.Toolkit", self.ctx)
         return toolkit.createMessageBox(parent_window, "querybox", BUTTONS_YES_NO, title, message)
 
-    def _confirm_format_preview(self, target_doc, format_request):
+    def _confirm_format_preview(self, target_doc, format_request, validation_warnings=None):
         preview = json.dumps(format_request, ensure_ascii=False, indent=2)
         if len(preview) > 6000:
             preview = preview[:6000] + "\n... (preview truncated)"
@@ -1216,6 +1232,15 @@ class MainJob(unohelper.Base, XJobExecutor):
             f"Validated formatting plan ({operation_count} operations):\n\n"
             + preview + "\n\nApply it?"
         )
+        warnings = [warning for warning in (validation_warnings or []) if isinstance(warning, str)]
+        if warnings:
+            message = (
+                "注意：以下返回内容未被执行：\n- "
+                + "\n- ".join(warnings[:20])
+                + ("\n- ..." if len(warnings) > 20 else "")
+                + "\n\n"
+                + message
+            )
         return self._message_box(target_doc, "writer.ai Preview", message).execute() == YES
 
     def _confirm_undo(self, target_doc):
@@ -1238,12 +1263,16 @@ class MainJob(unohelper.Base, XJobExecutor):
         self._start_status_indicator(target_doc)
 
         def request_worker():
+            validation_report = []
             try:
-                result = self.call_model(query, api_key, model, endpoint)
-                result_json = json.dumps(result or {})
+                result = self.call_model(query, api_key, model, endpoint, validation_report)
+                result_json = json.dumps({
+                    "request": result or {},
+                    "warnings": validation_report,
+                })
             except Exception as e:
                 log_to_console(f"Background model request failed: {e}")
-                result_json = "{}"
+                result_json = json.dumps({"request": {}, "warnings": validation_report})
             async_callback.addCallback(callback, result_json)
 
         threading.Thread(target=request_worker, name="writer-ai-api", daemon=True).start()
@@ -1307,7 +1336,7 @@ class MainJob(unohelper.Base, XJobExecutor):
     ]
     
     @staticmethod
-    def call_model(query, api_key, model, endpoint):
+    def call_model(query, api_key, model, endpoint, validation_report=None):
         """
     使用 OpenAI 兼容的 Chat Completions 接口生成格式化指令。
     
@@ -1518,7 +1547,7 @@ class MainJob(unohelper.Base, XJobExecutor):
                 clean_json = content.replace("```json", "").replace("```", "").strip()
                 
                 # 2. 只解析一次并存储在变量中
-                data = validate_format_request(json.loads(clean_json))
+                data = validate_format_request(json.loads(clean_json), validation_report)
                 
                 # 3. 打印并返回
                 log_to_console(f"Structured query: {data}")

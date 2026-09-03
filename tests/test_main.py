@@ -102,6 +102,25 @@ class MainLogicTests(unittest.TestCase):
             )
         self.assertIsNone(result)
 
+    def test_model_validation_report_lists_ignored_properties(self):
+        payload = {
+            "choices": [{
+                "message": {
+                    "content": '{"all_pages": {"bold": true, "not_a_format": true}}'
+                }
+            }]
+        }
+        report = []
+
+        with patch.object(main, "urlopen", lambda request, timeout: FakeResponse(payload)):
+            result = main.MainJob.call_model(
+                "test", "test-key", "test-model", "https://example.test/v1", report
+            )
+
+        self.assertEqual(result, {"all_pages": {"bold": True}})
+        self.assertEqual(len(report), 1)
+        self.assertIn("not_a_format", report[0])
+
     def test_cancelled_response_is_ignored(self):
         job = object.__new__(main.MainJob)
         job._request_generation = 2
