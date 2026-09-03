@@ -122,6 +122,26 @@ class WriterDocumentTests(unittest.TestCase):
         paragraphs = list(self.formatter._paragraphs())
         self.assertTrue(all(not paragraph.String for paragraph in paragraphs))
 
+    def test_docx_round_trip(self):
+        path = os.path.join(self.profile, "round-trip.docx")
+        url = uno.systemPathToFileUrl(path)
+        cursor = self.doc.Text.createTextCursor()
+        self.doc.Text.insertString(cursor, "DOCX title", False)
+        self.doc.Text.insertControlCharacter(cursor, uno.getConstantByName("com.sun.star.text.ControlCharacter.PARAGRAPH_BREAK"), False)
+        self.doc.Text.insertString(cursor, "DOCX body.", False)
+
+        filter_name = uno.createUnoStruct("com.sun.star.beans.PropertyValue")
+        filter_name.Name = "FilterName"
+        filter_name.Value = "Office Open XML Text"
+        self.doc.storeAsURL(url, (filter_name,))
+        self.doc.close(True)
+        self.doc = self.desktop.loadComponentFromURL(url, "_blank", 0, ())
+        self.formatter = main.Format(self.context, self.doc)
+        self.formatter.format_document_structure({"infer": True, "title": {"bold": True}})
+        paragraphs = list(self.formatter._paragraphs())
+        self.assertEqual(paragraphs[0].String, "DOCX title")
+        self.assertEqual(paragraphs[0].ParaStyleName, "Title")
+
 
 if __name__ == "__main__":
     unittest.main()
