@@ -721,17 +721,21 @@ class MainJob(unohelper.Base, XJobExecutor):
         return bool(value)
 
     BACKEND_PRESETS = [
-        ("Kimi K3 (阿里云百炼)", "chat", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+        ("阿里云百炼 Kimi K3", "kimi-k3", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+        ("Moonshot Kimi K3", "kimi-k3", "https://api.moonshot.ai/v1"),
+        ("自定义 OpenAI 兼容接口", "", ""),
     ]
     
     @staticmethod
-    def askKimi(query, api_key=None):
+    def call_model(query, api_key, model, endpoint):
         """
-    使用 Kimi K3 将自然语言指令转换为 LibreOffice Writer 的结构化配置字典。
+    使用 OpenAI 兼容的 Chat Completions 接口生成格式化指令。
     
     Args:
         user_input: 用户输入的自然语言，如 "将第一页第一行进行黄色高亮标记"
-        api_key: Kimi API Key
+        api_key: 服务商 API Key
+        model: 模型名称
+        endpoint: Base URL 或完整 Chat Completions URL
         
     Returns:
         dict: 结构化后的指令字典。若解析失败则返回空字典。
@@ -883,13 +887,17 @@ class MainJob(unohelper.Base, XJobExecutor):
                 
         )
         if not api_key:
-            api_key = os.environ.get("DASHSCOPE_API_KEY", "")
-        if not api_key:
-            log_to_console("Bailian API key is not configured.")
+            api_key = os.environ.get("WRITER_AI_API_KEY", "")
+        if not api_key or not model or not endpoint:
+            log_to_console("API key, model, and endpoint must be configured.")
             return {}
 
+        endpoint = endpoint.rstrip("/")
+        if not endpoint.endswith("/chat/completions"):
+            endpoint += "/chat/completions"
+
         payload = json.dumps({
-            "model": "kimi-k3",
+            "model": model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": query},
@@ -898,7 +906,7 @@ class MainJob(unohelper.Base, XJobExecutor):
             "max_completion_tokens": 2048,
         }).encode("utf-8")
         request = Request(
-            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+            endpoint,
             data=payload,
             headers={
                 "Authorization": f"Bearer {api_key}",
@@ -927,10 +935,10 @@ class MainJob(unohelper.Base, XJobExecutor):
                 return None
         except HTTPError as e:
             error_body = e.read().decode("utf-8", errors="replace")
-            log_to_console(f"Kimi API 请求失败: HTTP {e.code}: {error_body}")
+            log_to_console(f"Model API 请求失败: HTTP {e.code}: {error_body}")
             return {}
         except (URLError, KeyError, IndexError, json.JSONDecodeError) as e:
-            log_to_console(f"Kimi API 调用失败: {e}")
+            log_to_console(f"Model API 调用失败: {e}")
             return {}
 
 
@@ -939,7 +947,7 @@ class MainJob(unohelper.Base, XJobExecutor):
         # ... [Unchanged] ...
         model_name = self.get_config("model", "").lower()
         for i, preset in enumerate(self.BACKEND_PRESETS):
-            if preset[0].lower() == model_name:
+            if preset[1].lower() == model_name:
                 return i
         return 0
 
@@ -949,11 +957,14 @@ class MainJob(unohelper.Base, XJobExecutor):
         if "backend" in controls and controls["backend"].getModel().SelectedItems:
             backend_idx = controls["backend"].getModel().SelectedItems[0]
             preset = self.BACKEND_PRESETS[backend_idx]
-            result["model"] = preset[0]
-            result["api_type"] = preset[1]
-            result["endpoint"] = preset[2]
-        if "kimi_api_key" in controls:
-            result["kimi_api_key"] = controls["kimi_api_key"].getModel().Text
+            result["model"] = controls["model"].getModel().Text or preset[1]
+            result["endpoint"] = controls["endpoint"].getModel().Text or preset[2]
+        if "api_key" in controls:
+            result["api_key"] = controls["api_key"].getModel().Text
+        if "model" in controls:
+            result["model"] = controls["model"].getModel().Text
+        if "endpoint" in controls:
+            result["endpoint"] = controls["endpoint"].getModel().Text
         return result
 
     def _save_settings(self, result):
@@ -968,7 +979,7 @@ class MainJob(unohelper.Base, XJobExecutor):
 
     def settings_box(self, title="", x=None, y=None):
         log_to_console("--- Starting settings_box ---")
-        WIDTH, HEIGHT = 600, 150
+        WIDTH, HEIGHT = 700, 260
         HORI_MARGIN, VERT_MARGIN = 10, 10
         BUTTON_WIDTH, BUTTON_HEIGHT = 100, 26
         HORI_SEP, VERT_SEP = 10, 10
@@ -1009,11 +1020,22 @@ class MainJob(unohelper.Base, XJobExecutor):
             controls["backend"] = add("list_backend", "ListBox", HORI_MARGIN + LABEL_WIDTH, y_pos,
                 edit_width, EDIT_HEIGHT,
                 {"Dropdown": True, "StringItemList": backend_names, "SelectedItems": (current_backend_idx,)})
-            
+
             y_pos += EDIT_HEIGHT + VERT_SEP
-            add("label_kimi_api_key", "FixedText", HORI_MARGIN, y_pos + 4, LABEL_WIDTH, LABEL_HEIGHT, {"Label": "百炼 Kimi API Key:"})
-            controls["kimi_api_key"] = add("edit_kimi_api_key", "Edit", HORI_MARGIN + LABEL_WIDTH, y_pos,
-                edit_width, EDIT_HEIGHT, {"Text": str(self.get_config("kimi_api_key", ""))})
+            add("label_api_key", "FixedText", HORI_MARGIN, y_pos + 4, LABEL_WIDTH, LABEL_HEIGHT, {"Label": "API Key:"})
+            controls["api_key"] = add("edit_api_key", "Edit", HORI_MARGIN + LABEL_WIDTH, y_pos,
+                edit_width, EDIT_HEIGHT, {"Text": str(self.get_config("api_key", ""))})
+
+            y_pos += EDIT_HEIGHT + VERT_SEP
+            preset = self.BACKEND_PRESETS[current_backend_idx]
+            add("label_model", "FixedText", HORI_MARGIN, y_pos + 4, LABEL_WIDTH, LABEL_HEIGHT, {"Label": "Model:"})
+            controls["model"] = add("edit_model", "Edit", HORI_MARGIN + LABEL_WIDTH, y_pos,
+                edit_width, EDIT_HEIGHT, {"Text": str(self.get_config("model", preset[1]))})
+
+            y_pos += EDIT_HEIGHT + VERT_SEP
+            add("label_endpoint", "FixedText", HORI_MARGIN, y_pos + 4, LABEL_WIDTH, LABEL_HEIGHT, {"Label": "Base URL:"})
+            controls["endpoint"] = add("edit_endpoint", "Edit", HORI_MARGIN + LABEL_WIDTH, y_pos,
+                edit_width, EDIT_HEIGHT, {"Text": str(self.get_config("endpoint", preset[2]))})
 
             y_pos = HEIGHT - BUTTON_HEIGHT - VERT_MARGIN
             button_start_x = (WIDTH - (BUTTON_WIDTH * 2 + HORI_SEP)) / 2
@@ -1185,8 +1207,10 @@ class MainJob(unohelper.Base, XJobExecutor):
 
                 # 5. AI Process & Execution
                 # Note: Passing target_doc to your formatting logic is CRITICAL
-                kimi_api_key = self.get_config("kimi_api_key", "") or os.environ.get("DASHSCOPE_API_KEY", "")
-                format_request = MainJob.askKimi(user_input, kimi_api_key)
+                api_key = self.get_config("api_key", "") or os.environ.get("WRITER_AI_API_KEY", "")
+                model = self.get_config("model", "kimi-k3")
+                endpoint = self.get_config("endpoint", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+                format_request = MainJob.call_model(user_input, api_key, model, endpoint)
                 
                 # Make sure your Format class is initialized with the CORRECT doc
                 fmt = Format(self.ctx, target_doc) 

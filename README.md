@@ -42,3 +42,9 @@ What i need to do :
 1. achieve  formating title and paragraph ✅
 2. table formating ✅
 3. thinking about
+
+### API configuration
+
+The settings dialog supports a provider preset or a custom OpenAI-compatible
+API. Users can enter their own API key, model name, and Base URL. The default
+configuration is Kimi K3 through Alibaba Cloud Bailian.
