@@ -84,12 +84,12 @@ TABLE_KEYS = {
     "font_family", "font_size", "font_color", "repeat_header",
     "first_column_bold", "zebra", "zebra_background", "row_height",
     "border_color", "border_width", "column_widths",
-    "merge_cells",
+    "merge_cells", "auto_align",
 }
 
 
 def _valid_value(key, value):
-    if key in {"bold", "italic", "remove_highlight", "clear_format", "title", "body", "insert_before", "header", "format_header", "header_bold", "repeat_header", "first_column_bold", "zebra"}:
+    if key in {"bold", "italic", "remove_highlight", "clear_format", "title", "body", "insert_before", "header", "format_header", "header_bold", "repeat_header", "first_column_bold", "zebra", "auto_align"}:
         return isinstance(value, bool)
     if key in {"font_size", "first_line_indent", "row_height", "border_width"}:
         return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
@@ -831,6 +831,12 @@ class Format:
 
         alignment = str(options.get("align", "")).lower()
         alignments = {"left": LEFT, "right": RIGHT, "center": CENTER, "justify": BLOCK}
+        if options.get("auto_align", False):
+            cell_text = cell.String.strip()
+            if re.fullmatch(r"[+-]?(?:\d+(?:\.\d+)?|\d{1,3}(?:,\d{3})+)%?", cell_text):
+                cell_cursor.ParaAdjust = RIGHT
+            elif re.fullmatch(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}", cell_text):
+                cell_cursor.ParaAdjust = CENTER
         if alignment in alignments:
             cell_cursor.ParaAdjust = alignments[alignment]
 
@@ -1382,6 +1388,7 @@ class MainJob(unohelper.Base, XJobExecutor):
                                "zebra", "zebra_background", "row_height", "border_color", "border_width",
                                "column_widths" (percentage list summing to 100),
                                "merge_cells" (list of {"start": "A1", "end": "B1"}),
+                               "auto_align" (true for automatic numeric/date alignment),
                                "align" (left/right/center/justify), "font_name", "font_size", and "font_color".
 
                             # 5. Text Insertion & Spatial Localization Protocol

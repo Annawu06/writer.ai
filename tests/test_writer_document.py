@@ -89,6 +89,7 @@ class WriterDocumentTests(unittest.TestCase):
         table.getCellByName("A1").String = "Header"
         table.getCellByName("B1").String = "Value"
         table.getCellByName("A2").String = "Row"
+        table.getCellByName("B2").String = "12.5%"
 
         self.formatter.format_table(table, {
             "header": True,
@@ -97,10 +98,13 @@ class WriterDocumentTests(unittest.TestCase):
             "zebra": True,
             "zebra_background": "F2F2F2",
             "align": "center",
+            "auto_align": True,
         })
         self.assertEqual(table.getCellByName("A1").BackColor, 0x0ABAB5)
         self.assertEqual(table.getCellByName("A2").BackColor, 0xF2F2F2)
         self.assertEqual(int(table.getCellByName("A1").createTextCursor().ParaAdjust), 3)
+        self.formatter.format_table(table, {"auto_align": True})
+        self.assertEqual(int(table.getCellByName("B2").createTextCursor().ParaAdjust), 2)
 
     def test_table_column_widths(self):
         table = self.doc.createInstance("com.sun.star.text.TextTable")
