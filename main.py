@@ -456,6 +456,17 @@ class Format:
         if value is not False:
             self.set_paragraph_style(cursor, "Text Body")
 
+    def set_first_line_indent(self, cursor, characters):
+        """Set first-line indentation; Writer stores paragraph distances in 1/100 mm."""
+        try:
+            char_count = float(characters)
+            if char_count < 0:
+                return
+            font_size = float(getattr(cursor, "CharHeight", 12) or 12)
+            cursor.ParaFirstLineIndent = int(char_count * font_size * 2540 / 72)
+        except (TypeError, ValueError) as e:
+            log_to_console(f"Invalid first-line indent: {e}")
+
     def _table_names(self):
         return list(self.doc.TextTables.getElementNames())
 
@@ -603,7 +614,8 @@ def apply_styles(fmt_instance, target_cursor, line_style_dict):
         "clear_format": "clear_format",
         "title": "format_title",
         "body": "format_body",
-        "paragraph_style": "set_paragraph_style"
+        "paragraph_style": "set_paragraph_style",
+        "first_line_indent": "set_first_line_indent"
     }
 
     # 特殊处理：替换文本
@@ -803,6 +815,7 @@ class MainJob(unohelper.Base, XJobExecutor):
                             4. Alignment: "align_center", "align_left", "align_right", "align_justify" (all bool).
                             5. Paragraph styles: "title": true, "body": true, or "paragraph_style": "Title" / "Text Body".
                             6. Tables: "tables": {"table_1": { ... }} or a top-level "table_1": { ... }.
+                            7. Paragraph indentation: "first_line_indent": number of Chinese character widths.
                                Table properties: "cell_background", "table_background", "header": true,
                                "header_background", "header_bold", "align" (left/right/center/justify),
                                "font_name", "font_size", and "font_color".
@@ -882,6 +895,7 @@ class MainJob(unohelper.Base, XJobExecutor):
                 {"role": "user", "content": query},
             ],
             "stream": False,
+            "max_completion_tokens": 2048,
         }).encode("utf-8")
         request = Request(
             "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
@@ -894,7 +908,7 @@ class MainJob(unohelper.Base, XJobExecutor):
         )
 
         try:
-            with urlopen(request, timeout=120) as response:
+            with urlopen(request, timeout=60) as response:
                 response_data = json.loads(response.read().decode("utf-8"))
             content = response_data["choices"][0]["message"]["content"]
             print(f"content:{content}")
@@ -1177,9 +1191,11 @@ class MainJob(unohelper.Base, XJobExecutor):
                 # Make sure your Format class is initialized with the CORRECT doc
                 fmt = Format(self.ctx, target_doc) 
                 
-                execute_format_request(format_request, fmt)
-
-                log_to_console("Formatting completed successfully.")
+                if format_request:
+                    execute_format_request(format_request, fmt)
+                    log_to_console("Formatting completed successfully.")
+                else:
+                    log_to_console("Formatting was not completed because the Kimi request failed or returned no instructions.")
 
             except Exception as e:
                 log_to_console("--- EXCEPTION in trigger(format) ---")
