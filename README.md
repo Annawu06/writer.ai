@@ -47,7 +47,8 @@ configuration for future Writer sessions.
 5. Use LibreOffice's `Ctrl+Z` to revert the complete formatting operation if needed.
 
 While a request is running, the Writer status bar shows the analysis state.
-Use **Writer.AI > AI Formatter > Cancel Formatting** to cancel it.
+Requests use a 60-second timeout. This does not undo formatting that has
+already been applied; use `Ctrl+Z` to undo applied changes.
 
 ## Development
 

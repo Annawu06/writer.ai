@@ -31,17 +31,6 @@
               <value>_self</value>
             </prop>
           </node>
-          <node oor:name="M3" oor:op="replace">
-            <prop oor:name="Title">
-              <value xml:lang="en-US">Cancel Formatting</value>
-            </prop>
-            <prop oor:name="URL">
-              <value>service:org.extension.writerai.do?cancel_format</value>
-            </prop>
-            <prop oor:name="Target" oor:type="xs:string">
-              <value>_self</value>
-            </prop>
-          </node>
         </node>
       </node>
     </node>

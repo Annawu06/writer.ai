@@ -148,14 +148,6 @@ class MainLogicTests(unittest.TestCase):
         self.assertEqual(len(report), 1)
         self.assertIn("not_a_format", report[0])
 
-    def test_cancelled_response_is_ignored(self):
-        job = object.__new__(main.MainJob)
-        job._request_generation = 2
-        job._request_in_progress = True
-        job.cancel_format_request()
-        self.assertFalse(job._request_in_progress)
-        self.assertEqual(job._request_generation, 3)
-
     def test_status_indicator_lifecycle(self):
         class Indicator:
             def __init__(self):

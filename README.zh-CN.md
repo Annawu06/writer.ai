@@ -44,8 +44,8 @@ LibreOffice 密码容器中，不会写入项目配置文件或应用日志。�
 4. 检查格式化计划，选择 **Yes** 应用。
 5. 如需恢复，使用 LibreOffice 的 `Ctrl+Z` 即可撤销本次完整修改。
 
-请求执行期间，Writer 状态栏会显示分析状态。可以通过 **Writer.AI >
-AI Formatter > Cancel Formatting** 取消请求。
+请求执行期间，Writer 状态栏会显示分析状态，请求超时时间为 60 秒。它不会
+撤销已经应用的格式；如需撤销，请使用 `Ctrl+Z`。
 
 ## 开发
 

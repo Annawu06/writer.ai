@@ -1493,15 +1493,6 @@ class MainJob(unohelper.Base, XJobExecutor):
         threading.Thread(target=request_worker, name="writer-ai-api", daemon=True).start()
         log_to_console("Formatting request started in background; analysing document.")
 
-    def cancel_format_request(self):
-        if not self._request_in_progress:
-            log_to_console("No formatting request is running.")
-            return
-        self._request_generation += 1
-        self._request_in_progress = False
-        self._end_status_indicator()
-        log_to_console("Formatting request cancelled; its response will be ignored.")
-
     def get_config(self, key, default):
         name_file = "writerai.json"
         path_settings = self.sm.createInstanceWithContext('com.sun.star.util.PathSettings', self.ctx)
@@ -2049,9 +2040,6 @@ their property meaning. Never include explanations or Markdown.
                 log_to_console(e)
                 traceback.print_exc(file=sys.stderr)
 
-        elif args == "cancel_format":
-            self.cancel_format_request()
-        
         elif args == "format":
             log_to_console("Entering format branch...")
             try:

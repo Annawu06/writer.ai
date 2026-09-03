@@ -4,6 +4,7 @@
 
 - Correctly remove bold, italic, and underline formatting when requested.
 - Add regression coverage for formatting removal.
+- Remove the unused request-cancellation menu command.
 
 ## 1.0.0 - 2026-09-03
 
