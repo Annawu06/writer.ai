@@ -56,7 +56,7 @@ class MainLogicTests(unittest.TestCase):
         summary = main.summarize_format_request({
             "page_1": {"line_1": {"highlight": True}},
         })
-        self.assertEqual(summary, ["第 1 页第 1 行：高亮（黄色）"])
+        self.assertEqual(summary, ["page 1, line 1: Highlight (yellow)"])
 
     def test_column_name_conversion(self):
         self.assertEqual(main.Format._column_name(1), "A")
@@ -193,7 +193,7 @@ class MainLogicTests(unittest.TestCase):
         job = object.__new__(main.MainJob)
         job._status_indicator = None
         job._start_status_indicator(Document(Controller(Frame(indicator))))
-        self.assertEqual(indicator.started, ("writer.ai: 正在分析", 100))
+        self.assertEqual(indicator.started, ("Writer.AI: analysing", 100))
         job._end_status_indicator()
         self.assertTrue(indicator.ended)
 

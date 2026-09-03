@@ -255,47 +255,47 @@ def count_format_operations(request):
 
 
 PREVIEW_PROPERTY_LABELS = {
-    "bold": "加粗",
-    "italic": "斜体",
-    "underline": "下划线",
-    "font_size": "字号",
-    "font_color": "文字颜色",
-    "font_name": "字体",
-    "font_family": "字体",
-    "highlight": "高亮",
-    "remove_highlight": "取消高亮",
-    "align_center": "居中",
-    "align_left": "左对齐",
-    "align_right": "右对齐",
-    "align_justify": "两端对齐",
-    "first_line_indent": "段首缩进",
-    "header": "设置表头",
-    "header_background": "表头背景色",
-    "table_background": "表格背景色",
-    "cell_background": "单元格背景色",
-    "row_height": "行高",
-    "column_widths": "列宽",
-    "caption": "表格标题",
-    "title": "标题样式",
+    "bold": "Bold",
+    "italic": "Italic",
+    "underline": "Underline",
+    "font_size": "Font size",
+    "font_color": "Font color",
+    "font_name": "Font",
+    "font_family": "Font",
+    "highlight": "Highlight",
+    "remove_highlight": "Remove highlight",
+    "align_center": "Center alignment",
+    "align_left": "Left alignment",
+    "align_right": "Right alignment",
+    "align_justify": "Justified alignment",
+    "first_line_indent": "First-line indentation",
+    "header": "Format header",
+    "header_background": "Header background",
+    "table_background": "Table background",
+    "cell_background": "Cell background",
+    "row_height": "Row height",
+    "column_widths": "Column widths",
+    "caption": "Table caption",
+    "title": "Title style",
 }
 
 
 def _preview_target(scope):
     if scope == "all_pages" or scope in {"document", "entire_doc"}:
-        return "整个文档"
+        return "the entire document"
     match = re.fullmatch(r"page_(\d+)", str(scope))
     if match:
-        return f"第 {match.group(1)} 页"
+        return f"page {match.group(1)}"
     match = re.fullmatch(r"paragraph_(\d+)", str(scope))
     if match:
-        return f"第 {match.group(1)} 个段落"
+        return f"paragraph {match.group(1)}"
     match = re.fullmatch(r"table_(\d+)", str(scope))
     if match:
-        return f"第 {match.group(1)} 个表格"
+        return f"table {match.group(1)}"
     if scope == "selection":
-        return "当前选区"
+        return "the current selection"
     if scope == "paragraph_text":
-        return "关键词所在段落"
+        return "the paragraph containing the keyword"
     return str(scope)
 
 
@@ -308,9 +308,9 @@ def summarize_format_request(request):
             return
         for key, item in value.items():
             if key == "line_all":
-                visit(item, target + "全部行")
+                visit(item, target + ", all rows")
             elif re.fullmatch(r"line_\d+", str(key)):
-                visit(item, target + key.replace("line_", "第 ") + " 行")
+                visit(item, target + ", line " + key.replace("line_", ""))
             elif key == "tables":
                 visit(item, target)
             elif re.fullmatch(r"table_\d+", str(key)):
@@ -318,16 +318,17 @@ def summarize_format_request(request):
             elif key == "cells":
                 visit(item, target)
             elif re.fullmatch(r"row_\d+_col_\d+", str(key)):
-                visit(item, target + " " + key.replace("row_", "第 ").replace("_col_", " 行第 ") + " 列")
+                cell_name = key.replace("row_", "row ").replace("_col_", ", column ")
+                visit(item, target + ", " + cell_name)
             elif key in {"paragraphs", "structure"}:
                 visit(item, target)
             elif key == "contains":
                 if isinstance(item, dict):
                     keyword = item.get("text", "")
-                    visit(item.get("format", {}), f"包含“{keyword}”的段落")
+                    visit(item.get("format", {}), f"the paragraph containing '{keyword}'")
             elif key == "paragraph_text":
                 if isinstance(item, dict):
-                    visit(item.get("format", {}), "关键词所在段落")
+                    visit(item.get("format", {}), "the paragraph containing the keyword")
             elif isinstance(item, dict):
                 visit(item, _preview_target(key) if key != "title" else target)
             else:
@@ -335,12 +336,12 @@ def summarize_format_request(request):
                 if item is True and key in {"bold", "italic", "align_center", "align_left", "align_right", "align_justify", "header"}:
                     detail = ""
                 elif key == "highlight" and item is True:
-                    detail = "（黄色）"
+                    detail = " (yellow)"
                 elif key == "remove_highlight" and item is True:
                     detail = ""
                 else:
                     detail = f"：{item}"
-                summaries.append(f"{target}：{label}{detail}")
+                summaries.append(f"{target}: {label}{detail}")
 
     for scope, value in request.items() if isinstance(request, dict) else ():
         visit(value, _preview_target(scope))
@@ -1320,7 +1321,7 @@ class MainJob(unohelper.Base, XJobExecutor):
                     self._message_box(
                         target_doc,
                         "writer.ai 请求失败",
-                        "无法完成格式化请求：\n\n" + "\n".join(request_errors),
+                        "Unable to complete the formatting request:\n\n" + "\n".join(request_errors),
                     ).execute()
                 log_to_console("Formatting was not completed because the model returned no instructions.")
                 return
@@ -1350,7 +1351,7 @@ class MainJob(unohelper.Base, XJobExecutor):
         try:
             frame = target_doc.getCurrentController().getFrame()
             indicator = frame.createStatusIndicator()
-            indicator.start("writer.ai: 正在分析", 100)
+            indicator.start("Writer.AI: analysing", 100)
             self._status_indicator = indicator
         except Exception as e:
             # Headless documents and older frames may not expose a status bar.
@@ -1430,9 +1431,9 @@ class MainJob(unohelper.Base, XJobExecutor):
         operation_count = count_format_operations(format_request)
         summary = summarize_format_request(format_request)
         if not summary:
-            summary = ["未识别到可执行的格式化操作"]
+            summary = ["No executable formatting operations were recognized"]
         message = (
-            f"将执行 {operation_count} 项格式化操作：\n\n- "
+            f"Formatting plan ({operation_count} operations):\n\n- "
             + "\n- ".join(summary[:30])
             + ("\n- ..." if len(summary) > 30 else "")
             + "\n\nApply it?"
@@ -1440,7 +1441,7 @@ class MainJob(unohelper.Base, XJobExecutor):
         warnings = [warning for warning in (validation_warnings or []) if isinstance(warning, str)]
         if warnings:
             message = (
-                "注意：以下返回内容未被执行：\n- "
+                "The following returned instructions were ignored:\n- "
                 + "\n- ".join(warnings[:20])
                 + ("\n- ..." if len(warnings) > 20 else "")
                 + "\n\n"
@@ -1481,7 +1482,7 @@ class MainJob(unohelper.Base, XJobExecutor):
                 })
             except Exception as e:
                 log_to_console(f"Background model request failed: {e}")
-                request_errors.append("后台请求异常，请稍后重试。")
+                request_errors.append("The background request failed. Please try again later.")
                 result_json = json.dumps({
                     "request": {},
                     "warnings": validation_report,
@@ -1544,9 +1545,9 @@ class MainJob(unohelper.Base, XJobExecutor):
         return bool(value)
 
     BACKEND_PRESETS = [
-        ("阿里云百炼 Kimi K3", "kimi-k3", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-        ("Moonshot Kimi K3", "kimi-k3", "https://api.moonshot.ai/v1"),
-        ("自定义 OpenAI 兼容接口", "", ""),
+        ("Alibaba Cloud Bailian - Kimi K3", "kimi-k3", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+        ("Moonshot - Kimi K3", "kimi-k3", "https://api.moonshot.ai/v1"),
+        ("Custom OpenAI-compatible API", "", ""),
     ]
     
     @staticmethod
@@ -1748,7 +1749,7 @@ their property meaning. Never include explanations or Markdown.
         if not api_key or not model or not endpoint:
             log_to_console("API key, model, and endpoint must be configured.")
             if error_report is not None:
-                error_report.append("请先在设置中填写 API Key、模型和接口地址。")
+                error_report.append("Enter an API key, model, and endpoint in Settings first.")
             return {}
 
         endpoint = endpoint.rstrip("/")
@@ -1791,18 +1792,18 @@ their property meaning. Never include explanations or Markdown.
             except Exception as e:
                 log_to_console(f"JSON Parsing Error: {e}")
                 if error_report is not None:
-                    error_report.append("模型返回的格式化指令无法解析，请重试。")
+                    error_report.append("The model returned an unreadable formatting plan. Please try again.")
                 return None
         except HTTPError as e:
             error_body = e.read().decode("utf-8", errors="replace")
             log_to_console(f"Model API 请求失败: HTTP {e.code}: {error_body}")
             if error_report is not None:
-                error_report.append(f"模型服务返回 HTTP {e.code}，请检查 API Key、模型和接口地址。")
+                error_report.append(f"The model service returned HTTP {e.code}. Check the API key, model, and endpoint.")
             return {}
         except (URLError, KeyError, IndexError, json.JSONDecodeError) as e:
             log_to_console(f"Model API 调用失败: {e}")
             if error_report is not None:
-                error_report.append("无法连接模型服务或服务返回了无效响应，请检查网络和配置。")
+                error_report.append("Could not connect to the model service or received an invalid response. Check the network and settings.")
             return {}
 
 
@@ -1929,8 +1930,13 @@ their property meaning. Never include explanations or Markdown.
                 "PushButtonType": OK,
                 "DefaultButton": True,
                 "Label": "Save Settings",
+                "HelpText": "Save the API key, model, and provider settings.",
             })
-            add("btn_cancel", "Button", button_start_x + BUTTON_WIDTH + HORI_SEP, y_pos, BUTTON_WIDTH, BUTTON_HEIGHT, {"PushButtonType": CANCEL})
+            add("btn_cancel", "Button", button_start_x + BUTTON_WIDTH + HORI_SEP, y_pos, BUTTON_WIDTH, BUTTON_HEIGHT, {
+                "PushButtonType": CANCEL,
+                "Label": "Cancel",
+                "HelpText": "Close without changing saved settings.",
+            })
 
             log_to_console("All controls added.")
 
