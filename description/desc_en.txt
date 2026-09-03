@@ -1,2 +1,3 @@
-AI agent for LibreOffice Writer with Qwen or Gemini.
-Do task such as quick word format, resource insert
+Writer.AI is an AI-assisted formatting extension for LibreOffice Writer.
+It converts natural-language instructions into validated formatting plans for
+paragraphs, headings, and tables, with preview, cancellation, and undo support.
