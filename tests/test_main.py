@@ -92,6 +92,16 @@ class MainLogicTests(unittest.TestCase):
             )
         self.assertEqual(result, {})
 
+    def test_invalid_model_json_returns_no_request(self):
+        def fake_urlopen(request, timeout):
+            return FakeResponse({"choices": [{"message": {"content": "not json"}}]})
+
+        with patch.object(main, "urlopen", fake_urlopen):
+            result = main.MainJob.call_model(
+                "test", "test-key", "test-model", "https://example.test/v1"
+            )
+        self.assertIsNone(result)
+
     def test_cancelled_response_is_ignored(self):
         job = object.__new__(main.MainJob)
         job._request_generation = 2

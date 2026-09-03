@@ -142,6 +142,22 @@ class WriterDocumentTests(unittest.TestCase):
         self.assertEqual(paragraphs[0].String, "DOCX title")
         self.assertEqual(paragraphs[0].ParaStyleName, "Title")
 
+    def test_multiple_table_selection(self):
+        first = self.doc.createInstance("com.sun.star.text.TextTable")
+        first.initialize(1, 1)
+        self.doc.Text.insertTextContent(self.doc.Text.createTextCursor(), first, False)
+        cursor = self.doc.Text.createTextCursor()
+        cursor.gotoEnd(False)
+        second = self.doc.createInstance("com.sun.star.text.TextTable")
+        second.initialize(1, 1)
+        self.doc.Text.insertTextContent(cursor, second, False)
+
+        self.assertEqual(len(self.formatter.get_tables("table_1")), 1)
+        self.assertEqual(len(self.formatter.get_tables("table_2")), 1)
+        self.formatter.format_table(self.formatter.get_tables("table_2")[0], {"table_background": "FF0000"})
+        self.assertNotEqual(first.getCellByName("A1").BackColor, 0xFF0000)
+        self.assertEqual(second.getCellByName("A1").BackColor, 0xFF0000)
+
 
 if __name__ == "__main__":
     unittest.main()
