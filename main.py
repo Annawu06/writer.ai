@@ -1285,6 +1285,7 @@ class MainJob(unohelper.Base, XJobExecutor):
         self.ctx = ctx
         self._request_in_progress = False
         self._request_callback = None
+        self._async_callback = None
         self._request_generation = 0
         self._status_indicator = None
         self._api_key_cache = ""
@@ -1306,6 +1307,8 @@ class MainJob(unohelper.Base, XJobExecutor):
             log_to_console("Ignoring cancelled or obsolete formatting response.")
             return
         self._request_in_progress = False
+        self._request_callback = None
+        self._async_callback = None
         try:
             response = json.loads(result_json)
             if isinstance(response, dict) and "request" in response:
@@ -1465,6 +1468,7 @@ class MainJob(unohelper.Base, XJobExecutor):
         generation = self._request_generation
         callback = FormatRequestCallback(self, target_doc, generation)
         self._request_callback = callback
+        self._async_callback = async_callback
         self._request_in_progress = True
         self._start_status_indicator(target_doc)
 
@@ -1488,7 +1492,10 @@ class MainJob(unohelper.Base, XJobExecutor):
                     "warnings": validation_report,
                     "errors": request_errors,
                 })
-            async_callback.addCallback(callback, result_json)
+            try:
+                async_callback.addCallback(callback, result_json)
+            except Exception as e:
+                log_to_console(f"Unable to deliver model response to Writer: {e}")
 
         threading.Thread(target=request_worker, name="writer-ai-api", daemon=True).start()
         log_to_console("Formatting request started in background; analysing document.")
