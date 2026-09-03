@@ -83,7 +83,7 @@ TABLE_KEYS = {
     "header_background", "header_bold", "align", "font_name",
     "font_family", "font_size", "font_color", "repeat_header",
     "first_column_bold", "zebra", "zebra_background", "row_height",
-    "border_color", "border_width",
+    "border_color", "border_width", "column_widths",
 }
 
 
@@ -92,6 +92,13 @@ def _valid_value(key, value):
         return isinstance(value, bool)
     if key in {"font_size", "first_line_indent", "row_height", "border_width"}:
         return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
+    if key == "column_widths":
+        return (
+            isinstance(value, list)
+            and len(value) >= 2
+            and all(isinstance(item, (int, float)) and not isinstance(item, bool) and item > 0 for item in value)
+            and abs(sum(value) - 100) < 0.01
+        )
     if key in {"underline", "font_color", "font_name", "font_family", "highlight", "replace_text", "insert_text", "paragraph_style", "cell_background", "table_background", "header_background", "zebra_background", "border_color", "align"}:
         return isinstance(value, (str, int, float, bool))
     if key.startswith("align_"):
@@ -836,6 +843,20 @@ class Format:
         if options.get("repeat_header", False):
             table.RepeatHeadline = True
 
+        column_widths = options.get("column_widths")
+        if column_widths:
+            try:
+                separators = list(table.TableColumnSeparators)
+                position = 0
+                for index, width in enumerate(column_widths[:-1]):
+                    position += float(width)
+                    if index < len(separators):
+                        separators[index].Position = int(position * 10)
+                        separators[index].IsVisible = True
+                table.TableColumnSeparators = tuple(separators)
+            except Exception as e:
+                log_to_console(f"Error setting table column widths: {e}")
+
         row_height = options.get("row_height")
         if row_height is not None:
             try:
@@ -1340,6 +1361,7 @@ class MainJob(unohelper.Base, XJobExecutor):
                                Table properties: "cell_background", "table_background", "header": true,
                                "header_background", "header_bold", "repeat_header", "first_column_bold",
                                "zebra", "zebra_background", "row_height", "border_color", "border_width",
+                               "column_widths" (percentage list summing to 100),
                                "align" (left/right/center/justify), "font_name", "font_size", and "font_color".
 
                             # 5. Text Insertion & Spatial Localization Protocol

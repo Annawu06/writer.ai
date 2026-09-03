@@ -102,6 +102,13 @@ class WriterDocumentTests(unittest.TestCase):
         self.assertEqual(table.getCellByName("A2").BackColor, 0xF2F2F2)
         self.assertEqual(int(table.getCellByName("A1").createTextCursor().ParaAdjust), 3)
 
+    def test_table_column_widths(self):
+        table = self.doc.createInstance("com.sun.star.text.TextTable")
+        table.initialize(2, 2)
+        self.doc.Text.insertTextContent(self.doc.Text.createTextCursor(), table, False)
+        self.formatter.format_table(table, {"column_widths": [30, 70]})
+        self.assertAlmostEqual(table.TableColumnSeparators[0].Position, 300, delta=1)
+
     def test_empty_document(self):
         paragraphs = list(self.formatter._paragraphs())
         self.assertTrue(all(not paragraph.String for paragraph in paragraphs))
