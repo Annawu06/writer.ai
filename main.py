@@ -783,12 +783,43 @@ class MainJob(unohelper.Base, XJobExecutor):
             if not format_request:
                 log_to_console("Formatting was not completed because the model returned no instructions.")
                 return
+
+            if not self._confirm_format_preview(target_doc, format_request):
+                log_to_console("Formatting cancelled after preview.")
+                return
+
             fmt = Format(self.ctx, target_doc)
-            execute_format_request(format_request, fmt)
+            undo_manager = target_doc.getUndoManager()
+            undo_manager.enterUndoContext("writer.ai formatting")
+            try:
+                execute_format_request(format_request, fmt)
+            finally:
+                undo_manager.leaveUndoContext()
             log_to_console("Formatting completed successfully.")
+
+            if self._confirm_undo(target_doc):
+                undo_manager.undo()
+                log_to_console("Formatting undone by user.")
         except Exception as e:
             log_to_console(f"Formatting failed after API response: {e}")
             traceback.print_exc(file=sys.stderr)
+
+    def _message_box(self, target_doc, title, message):
+        frame = target_doc.getCurrentController().getFrame()
+        parent_window = frame.getContainerWindow() if frame else None
+        toolkit = self.sm.createInstanceWithContext("com.sun.star.awt.Toolkit", self.ctx)
+        return toolkit.createMessageBox(parent_window, "querybox", BUTTONS_YES_NO, title, message)
+
+    def _confirm_format_preview(self, target_doc, format_request):
+        preview = json.dumps(format_request, ensure_ascii=False, indent=2)
+        if len(preview) > 6000:
+            preview = preview[:6000] + "\n... (preview truncated)"
+        message = "The following formatting plan will be applied:\n\n" + preview + "\n\nApply it?"
+        return self._message_box(target_doc, "writer.ai Preview", message).execute() == YES
+
+    def _confirm_undo(self, target_doc):
+        message = "Formatting was applied. Undo this formatting operation now?"
+        return self._message_box(target_doc, "writer.ai", message).execute() == YES
 
     def _start_format_request(self, target_doc, query, api_key, model, endpoint):
         if self._request_in_progress:
