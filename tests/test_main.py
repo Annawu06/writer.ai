@@ -191,6 +191,39 @@ class MainLogicTests(unittest.TestCase):
         job._end_status_indicator()
         self.assertTrue(indicator.ended)
 
+    def test_empty_settings_fields_preserve_saved_values(self):
+        class Model:
+            def __init__(self, text="", selected_items=()):
+                self.Text = text
+                self.SelectedItems = selected_items
+
+        class Control:
+            def __init__(self, model):
+                self.model = model
+
+            def getModel(self):
+                return self.model
+
+        job = object.__new__(main.MainJob)
+        job._settings_initial_values = {
+            "api_key": "saved-key",
+            "model": "saved-model",
+            "endpoint": "https://saved.example/v1",
+        }
+        controls = {
+            "api_key": Control(Model()),
+            "model": Control(Model()),
+            "endpoint": Control(Model()),
+        }
+        self.assertEqual(
+            job._read_dialog_config(controls),
+            {
+                "api_key": "saved-key",
+                "model": "saved-model",
+                "endpoint": "https://saved.example/v1",
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

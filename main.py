@@ -1656,17 +1656,18 @@ class MainJob(unohelper.Base, XJobExecutor):
     def _read_dialog_config(self, controls):
         # ... [Unchanged] ...
         result = {}
+        initial = getattr(self, "_settings_initial_values", {})
         if "backend" in controls and controls["backend"].getModel().SelectedItems:
             backend_idx = controls["backend"].getModel().SelectedItems[0]
             preset = self.BACKEND_PRESETS[backend_idx]
             result["model"] = controls["model"].getModel().Text or preset[1]
             result["endpoint"] = controls["endpoint"].getModel().Text or preset[2]
         if "api_key" in controls:
-            result["api_key"] = controls["api_key"].getModel().Text
+            result["api_key"] = controls["api_key"].getModel().Text or initial.get("api_key", "")
         if "model" in controls:
-            result["model"] = controls["model"].getModel().Text
+            result["model"] = controls["model"].getModel().Text or initial.get("model", "")
         if "endpoint" in controls:
-            result["endpoint"] = controls["endpoint"].getModel().Text
+            result["endpoint"] = controls["endpoint"].getModel().Text or initial.get("endpoint", "")
         return result
 
     def _save_settings(self, result):
@@ -1732,6 +1733,11 @@ class MainJob(unohelper.Base, XJobExecutor):
 
             y_pos += EDIT_HEIGHT + VERT_SEP
             preset = self.BACKEND_PRESETS[current_backend_idx]
+            self._settings_initial_values = {
+                "api_key": self.get_api_key(),
+                "model": str(self.get_config("model", preset[1]) or preset[1]),
+                "endpoint": str(self.get_config("endpoint", preset[2]) or preset[2]),
+            }
             add("label_model", "FixedText", HORI_MARGIN, y_pos + 4, LABEL_WIDTH, LABEL_HEIGHT, {"Label": "Model:"})
             controls["model"] = add("edit_model", "Edit", HORI_MARGIN + LABEL_WIDTH, y_pos,
                 edit_width, EDIT_HEIGHT, {"Text": str(self.get_config("model", preset[1]))})
