@@ -1016,12 +1016,13 @@ def apply_styles(fmt_instance, target_cursor, line_style_dict):
 class FormatRequestCallback(unohelper.Base, XCallback):
     """Move the completed background request back onto LibreOffice's UI queue."""
 
-    def __init__(self, job, target_doc):
+    def __init__(self, job, target_doc, generation):
         self.job = job
         self.target_doc = target_doc
+        self.generation = generation
 
     def notify(self, data):
-        self.job._finish_format_request(self.target_doc, data)
+        self.job._finish_format_request(self.target_doc, data, self.generation)
 
 
 class MainJob(unohelper.Base, XJobExecutor):
@@ -1034,6 +1035,7 @@ class MainJob(unohelper.Base, XJobExecutor):
         self.ctx = ctx
         self._request_in_progress = False
         self._request_callback = None
+        self._request_generation = 0
 
         try:
             self.sm = ctx.getServiceManager()
@@ -1047,7 +1049,10 @@ class MainJob(unohelper.Base, XJobExecutor):
             log_to_console(f"Failed to initialize Desktop: {e}")
             raise
 
-    def _finish_format_request(self, target_doc, result_json):
+    def _finish_format_request(self, target_doc, result_json, generation):
+        if generation != self._request_generation:
+            log_to_console("Ignoring cancelled or obsolete formatting response.")
+            return
         self._request_in_progress = False
         try:
             format_request = json.loads(result_json)
@@ -1134,7 +1139,9 @@ class MainJob(unohelper.Base, XJobExecutor):
         async_callback = self.sm.createInstanceWithContext(
             "com.sun.star.awt.AsyncCallback", self.ctx
         )
-        callback = FormatRequestCallback(self, target_doc)
+        self._request_generation += 1
+        generation = self._request_generation
+        callback = FormatRequestCallback(self, target_doc, generation)
         self._request_callback = callback
         self._request_in_progress = True
 
@@ -1148,7 +1155,15 @@ class MainJob(unohelper.Base, XJobExecutor):
             async_callback.addCallback(callback, result_json)
 
         threading.Thread(target=request_worker, name="writer-ai-api", daemon=True).start()
-        log_to_console("Formatting request started in background.")
+        log_to_console("Formatting request started in background; analysing document.")
+
+    def cancel_format_request(self):
+        if not self._request_in_progress:
+            log_to_console("No formatting request is running.")
+            return
+        self._request_generation += 1
+        self._request_in_progress = False
+        log_to_console("Formatting request cancelled; its response will be ignored.")
 
     def get_config(self, key, default):
         name_file = "writerai.json"
@@ -1636,6 +1651,9 @@ class MainJob(unohelper.Base, XJobExecutor):
                 log_to_console("--- EXCEPTION in trigger(setting) ---")
                 log_to_console(e)
                 traceback.print_exc(file=sys.stderr)
+
+        elif args == "cancel_format":
+            self.cancel_format_request()
         
         elif args == "format":
             log_to_console("Entering format branch...")

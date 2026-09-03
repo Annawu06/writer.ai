@@ -92,6 +92,14 @@ class MainLogicTests(unittest.TestCase):
             )
         self.assertEqual(result, {})
 
+    def test_cancelled_response_is_ignored(self):
+        job = object.__new__(main.MainJob)
+        job._request_generation = 2
+        job._request_in_progress = True
+        job.cancel_format_request()
+        self.assertFalse(job._request_in_progress)
+        self.assertEqual(job._request_generation, 3)
+
 
 if __name__ == "__main__":
     unittest.main()
