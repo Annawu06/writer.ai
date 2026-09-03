@@ -1150,6 +1150,37 @@ class FormatRequestCallback(unohelper.Base, XCallback):
         self.job._finish_format_request(self.target_doc, data, self.generation)
 
 
+class BackendItemListener(unohelper.Base, XItemListener):
+    def __init__(self, backend_control, model_control, endpoint_label, endpoint_control, presets):
+        self.backend_control = backend_control
+        self.model_control = model_control
+        self.endpoint_label = endpoint_label
+        self.endpoint_control = endpoint_control
+        self.presets = presets
+
+    def itemStateChanged(self, event):
+        try:
+            selected = self.backend_control.getModel().SelectedItems
+            if not selected:
+                return
+            index = int(selected[0])
+            if not 0 <= index < len(self.presets):
+                return
+            _, model, endpoint = self.presets[index]
+            is_custom = index == len(self.presets) - 1
+            self.endpoint_label.setVisible(is_custom)
+            self.endpoint_control.setVisible(is_custom)
+            if model:
+                self.model_control.getModel().Text = model
+            if endpoint:
+                self.endpoint_control.getModel().Text = endpoint
+        except Exception as e:
+            log_to_console(f"Unable to apply provider preset: {e}")
+
+    def disposing(self, event):
+        pass
+
+
 class MainJob(unohelper.Base, XJobExecutor):
     PASSWORD_URL = "vnd.writer.ai/api"
     PASSWORD_USER = "api_key"
@@ -1669,10 +1700,15 @@ class MainJob(unohelper.Base, XJobExecutor):
     def _detect_backend(self):
         # ... [Unchanged] ...
         model_name = self.get_config("model", "").lower()
+        endpoint = self.get_config("endpoint", "").lower().rstrip("/")
         for i, preset in enumerate(self.BACKEND_PRESETS):
-            if preset[1].lower() == model_name:
+            if (
+                preset[1]
+                and preset[1].lower() == model_name
+                and (not endpoint or preset[2].lower().rstrip("/") == endpoint)
+            ):
                 return i
-        return 0
+        return len(self.BACKEND_PRESETS) - 1
 
     def _read_dialog_config(self, controls):
         # ... [Unchanged] ...
@@ -1707,7 +1743,7 @@ class MainJob(unohelper.Base, XJobExecutor):
         log_to_console("--- Starting settings_box ---")
         WIDTH, HEIGHT = 700, 260
         HORI_MARGIN, VERT_MARGIN = 10, 10
-        BUTTON_WIDTH, BUTTON_HEIGHT = 100, 26
+        BUTTON_WIDTH, BUTTON_HEIGHT = 170, 26
         HORI_SEP, VERT_SEP = 10, 10
         LABEL_WIDTH, LABEL_HEIGHT, EDIT_HEIGHT = 150, 20, 24
         
@@ -1764,9 +1800,18 @@ class MainJob(unohelper.Base, XJobExecutor):
                 edit_width, EDIT_HEIGHT, {"Text": str(self.get_config("model", preset[1]))})
 
             y_pos += EDIT_HEIGHT + VERT_SEP
-            add("label_endpoint", "FixedText", HORI_MARGIN, y_pos + 4, LABEL_WIDTH, LABEL_HEIGHT, {"Label": "Base URL:"})
+            controls["endpoint_label"] = add("label_endpoint", "FixedText", HORI_MARGIN, y_pos + 4, LABEL_WIDTH, LABEL_HEIGHT, {"Label": "Base URL (advanced):"})
             controls["endpoint"] = add("edit_endpoint", "Edit", HORI_MARGIN + LABEL_WIDTH, y_pos,
                 edit_width, EDIT_HEIGHT, {"Text": str(self.get_config("endpoint", preset[2]))})
+            is_custom_backend = current_backend_idx == len(self.BACKEND_PRESETS) - 1
+            controls["endpoint_label"].setVisible(is_custom_backend)
+            controls["endpoint"].setVisible(is_custom_backend)
+
+            controls["backend_listener"] = BackendItemListener(
+                controls["backend"], controls["model"], controls["endpoint_label"],
+                controls["endpoint"], self.BACKEND_PRESETS
+            )
+            controls["backend"].addItemListener(controls["backend_listener"])
 
             y_pos = HEIGHT - BUTTON_HEIGHT - VERT_MARGIN
             button_start_x = (WIDTH - (BUTTON_WIDTH * 2 + HORI_SEP)) / 2

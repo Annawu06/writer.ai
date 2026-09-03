@@ -30,11 +30,13 @@ the plan for confirmation, and applies changes as one undoable operation.
 
 ## Configuration
 
-Open **Writer.AI > AI Formatter > Setting** and configure the provider, Base
-URL, model name, and API key. The default preset uses Kimi K3 through Alibaba
-Cloud Bailian. The API key is stored in LibreOffice's password container and is
-not written to the project configuration file or application logs. Click
-**Save Settings** to keep the configuration for future Writer sessions.
+Open **Writer.AI > AI Formatter > Setting** and configure the provider, model
+name, and API key. Provider presets fill the Base URL automatically; the Base
+URL field is shown only for the advanced custom OpenAI-compatible provider.
+The default preset uses Kimi K3 through Alibaba Cloud Bailian. The API key is
+stored in LibreOffice's password container and is not written to the project
+configuration file or application logs. Click **Save Settings** to keep the
+configuration for future Writer sessions.
 
 ## Usage
 
