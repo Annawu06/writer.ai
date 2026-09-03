@@ -292,7 +292,8 @@ class Format:
     def find_paragraph_cursor(self, text):
         """Return the first paragraph containing text, independent of pagination."""
         needle = str(text).casefold()
-        for paragraph in self._paragraphs():
+        paragraphs = list(self._paragraphs())
+        for paragraph_index, paragraph in enumerate(paragraphs):
             if needle in paragraph.String.casefold():
                 cursor = self.doc.Text.createTextCursorByRange(paragraph.getStart())
                 cursor.gotoRange(paragraph.getEnd(), True)
@@ -308,11 +309,15 @@ class Format:
         style = paragraph.ParaStyleName
         if style in {"Title", "Subtitle"}:
             return "title"
+        if not first_content_seen and style in {
+            "Text Body", "Body Text", "Default Paragraph Style", "Standard"
+        }:
+            return "title"
         if style == "Heading 1":
             return "heading_1"
         if style == "Heading 2":
             return "heading_2"
-        if style in {"Text Body", "Body Text", "Default Paragraph Style"}:
+        if style in {"Text Body", "Body Text", "Default Paragraph Style", "Standard"}:
             return "body"
         if not first_content_seen:
             return "title"
@@ -327,13 +332,16 @@ class Format:
         infer = options.get("infer", False) is True
         first_content_seen = False
         roles = {"title", "heading_1", "heading_2", "body"}
-        for paragraph in self._paragraphs():
+        paragraphs = list(self._paragraphs())
+        style_assignments = []
+        indent_assignments = []
+        for paragraph_index, paragraph in enumerate(paragraphs):
             if not paragraph.String.strip():
                 continue
             role = self._paragraph_role(paragraph, first_content_seen) if infer else {
                 "Title": "title", "Subtitle": "title", "Heading 1": "heading_1",
                 "Heading 2": "heading_2", "Text Body": "body", "Body Text": "body",
-                "Default Paragraph Style": "body",
+                "Default Paragraph Style": "body", "Standard": "body",
             }.get(paragraph.ParaStyleName)
             if role not in roles or role not in options:
                 first_content_seen = True
@@ -351,9 +359,28 @@ class Format:
                 "title": "Title", "heading_1": "Heading 1",
                 "heading_2": "Heading 2", "body": "Text Body",
             }[role]
-            self.set_paragraph_style(cursor, style_name)
             apply_styles(self, cursor, role_options)
+            if "first_line_indent" in role_options:
+                indent_assignments.append((paragraph_index, role_options["first_line_indent"]))
+            available_style = self.available_paragraph_style(style_name)
+            if available_style:
+                style_assignments.append((paragraph_index, available_style))
             first_content_seen = True
+
+        refreshed_paragraphs = list(self._paragraphs())
+        for paragraph_index, style_name in style_assignments:
+            if paragraph_index < len(refreshed_paragraphs):
+                refreshed_paragraphs[paragraph_index].ParaStyleName = style_name
+        for paragraph_index, character_count in indent_assignments:
+            if paragraph_index < len(refreshed_paragraphs):
+                try:
+                    paragraph = refreshed_paragraphs[paragraph_index]
+                    font_size = float(getattr(paragraph, "CharHeight", 12) or 12)
+                    paragraph.ParaFirstLineIndent = int(
+                        float(character_count) * font_size * 2540 / 72
+                    )
+                except (TypeError, ValueError) as e:
+                    log_to_console(f"Invalid structural first-line indent: {e}")
         
     def get_all_lines_cursor(self, page_num):
 
@@ -671,7 +698,22 @@ class Format:
     def set_paragraph_style(self, cursor, style_name):
         """Apply a Writer paragraph style to all paragraphs in the cursor."""
         if cursor and style_name:
+            styles = self.doc.StyleFamilies.getByName("ParagraphStyles")
+            if not styles.hasByName(style_name):
+                if style_name in {"Text Body", "Body Text"} and styles.hasByName("Standard"):
+                    style_name = "Standard"
+                else:
+                    log_to_console(f"Paragraph style is unavailable: {style_name}")
+                    return
             cursor.ParaStyleName = style_name
+
+    def available_paragraph_style(self, style_name):
+        styles = self.doc.StyleFamilies.getByName("ParagraphStyles")
+        if styles.hasByName(style_name):
+            return style_name
+        if style_name in {"Text Body", "Body Text"} and styles.hasByName("Standard"):
+            return "Standard"
+        return None
 
     def format_title(self, cursor, value=True):
         if value is not False:
