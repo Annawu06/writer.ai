@@ -12,7 +12,7 @@ fi
 
 # Create the new package
 echo "Creating package ${EXTENSION_NAME}.oxt..."
-zip -r "${EXTENSION_NAME}.oxt" description.xml Addons.xcu main.py META-INF assets description
+zip -r "${EXTENSION_NAME}.oxt" description.xml Addons.xcu main.py LICENSE META-INF assets description
 
 if [ $? -eq 0 ]; then
     if unzip -Z1 "${EXTENSION_NAME}.oxt" | rg -qi '(^|/)(AGENTS?\.md|task\.md|mao[^/]*)$|(^|/)Select$'; then
