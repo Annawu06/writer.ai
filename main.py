@@ -69,6 +69,89 @@ def get_doc(ctx):
         "com.sun.star.frame.Desktop", ctx
     )
     return desktop.getCurrentComponent()
+
+
+FORMAT_KEYS = {
+    "bold", "italic", "underline", "font_size", "font_color",
+    "font_name", "font_family", "highlight", "remove_highlight",
+    "align_center", "align_left", "align_right", "align_justify",
+    "replace_text", "insert_text", "insert_before", "clear_format",
+    "title", "body", "paragraph_style", "first_line_indent",
+}
+TABLE_KEYS = {
+    "cell_background", "table_background", "header", "format_header",
+    "header_background", "header_bold", "align", "font_name",
+    "font_family", "font_size", "font_color",
+}
+
+
+def _valid_value(key, value):
+    if key in {"bold", "italic", "remove_highlight", "clear_format", "title", "body", "insert_before", "header", "format_header", "header_bold"}:
+        return isinstance(value, bool)
+    if key in {"font_size", "first_line_indent"}:
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
+    if key in {"underline", "font_color", "font_name", "font_family", "highlight", "replace_text", "insert_text", "paragraph_style", "cell_background", "table_background", "header_background", "align"}:
+        return isinstance(value, (str, int, float, bool))
+    if key.startswith("align_"):
+        return isinstance(value, bool)
+    return False
+
+
+def validate_style(style, allowed_keys):
+    if not isinstance(style, dict):
+        return {}
+    clean_style = {}
+    for key, value in style.items():
+        if key not in allowed_keys:
+            log_to_console(f"Ignoring unsupported formatting property: {key}")
+            continue
+        if _valid_value(key, value):
+            clean_style[key] = value
+        else:
+            log_to_console(f"Ignoring invalid value for formatting property: {key}")
+    return clean_style
+
+
+def validate_format_request(request):
+    """Keep only known Writer scopes and properties before document mutation."""
+    if not isinstance(request, dict):
+        return {}
+
+    clean_request = {}
+    for scope, value in request.items():
+        if scope in {"selection", "all_pages", "document", "entire_doc"}:
+            clean_style = validate_style(value, FORMAT_KEYS)
+            if clean_style:
+                clean_request[scope] = clean_style
+        elif scope == "tables":
+            if not isinstance(value, dict):
+                continue
+            tables = {}
+            for table_scope, table_style in value.items():
+                if re.fullmatch(r"(?:table_\d+|table_all|all)", str(table_scope)):
+                    clean_style = validate_style(table_style, TABLE_KEYS)
+                    if clean_style:
+                        tables[table_scope] = clean_style
+            if tables:
+                clean_request[scope] = tables
+        elif re.fullmatch(r"page_\d+", str(scope)):
+            if not isinstance(value, dict):
+                continue
+            lines = {}
+            for line_scope, line_style in value.items():
+                if line_scope in {"line_all", "all"} or re.fullmatch(r"line_\d+", str(line_scope)):
+                    clean_style = validate_style(line_style, FORMAT_KEYS)
+                    if clean_style:
+                        lines[line_scope] = clean_style
+            if lines:
+                clean_request[scope] = lines
+        elif re.fullmatch(r"table_\d+", str(scope)):
+            clean_style = validate_style(value, TABLE_KEYS)
+            if clean_style:
+                clean_request[scope] = clean_style
+        else:
+            log_to_console(f"Ignoring unsupported formatting scope: {scope}")
+    return clean_request
     
        
 class Format:
@@ -978,7 +1061,7 @@ class MainJob(unohelper.Base, XJobExecutor):
                 clean_json = content.replace("```json", "").replace("```", "").strip()
                 
                 # 2. 只解析一次并存储在变量中
-                data = json.loads(clean_json)
+                data = validate_format_request(json.loads(clean_json))
                 
                 # 3. 打印并返回
                 log_to_console(f"Structured query: {data}")
