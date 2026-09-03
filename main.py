@@ -983,6 +983,9 @@ class FormatRequestCallback(unohelper.Base, XCallback):
 
 
 class MainJob(unohelper.Base, XJobExecutor):
+    PASSWORD_URL = "vnd.writer.ai/api"
+    PASSWORD_USER = "api_key"
+
     def __init__(self, ctx):
         log_to_console("MainJob.__init__ called.")
 
@@ -1029,6 +1032,40 @@ class MainJob(unohelper.Base, XJobExecutor):
         except Exception as e:
             log_to_console(f"Formatting failed after API response: {e}")
             traceback.print_exc(file=sys.stderr)
+
+    def _password_container(self):
+        return self.sm.createInstanceWithContext(
+            "com.sun.star.task.PasswordContainer", self.ctx
+        )
+
+    def get_api_key(self):
+        try:
+            record = self._password_container().findForName(
+                self.PASSWORD_URL, self.PASSWORD_USER, None
+            )
+            if record.UserList and record.UserList[0].Passwords:
+                return record.UserList[0].Passwords[0]
+        except Exception as e:
+            log_to_console(f"Unable to read API key from LibreOffice password storage: {e}")
+        return ""
+
+    def set_api_key(self, api_key):
+        container = self._password_container()
+        try:
+            container.removePersistent(self.PASSWORD_URL, self.PASSWORD_USER)
+        except Exception:
+            pass
+        if not api_key:
+            return
+        try:
+            handler = self.sm.createInstanceWithContext(
+                "com.sun.star.task.InteractionHandler", self.ctx
+            )
+            container.addPersistent(
+                self.PASSWORD_URL, self.PASSWORD_USER, (api_key,), handler
+            )
+        except Exception as e:
+            log_to_console(f"Unable to save API key in LibreOffice password storage: {e}")
 
     def _message_box(self, target_doc, title, message):
         frame = target_doc.getCurrentController().getFrame()
@@ -1371,10 +1408,12 @@ class MainJob(unohelper.Base, XJobExecutor):
         return result
 
     def _save_settings(self, result):
-        log_to_console("Saving settings:", result)
         if not result:
             log_to_console("No settings to save.")
             return
+        api_key = result.pop("api_key", None)
+        if api_key is not None:
+            self.set_api_key(api_key)
         for key, value in result.items():
             self.set_config(key, value)
         log_to_console("Settings saved.")
@@ -1427,7 +1466,7 @@ class MainJob(unohelper.Base, XJobExecutor):
             y_pos += EDIT_HEIGHT + VERT_SEP
             add("label_api_key", "FixedText", HORI_MARGIN, y_pos + 4, LABEL_WIDTH, LABEL_HEIGHT, {"Label": "API Key:"})
             controls["api_key"] = add("edit_api_key", "Edit", HORI_MARGIN + LABEL_WIDTH, y_pos,
-                edit_width, EDIT_HEIGHT, {"Text": str(self.get_config("api_key", ""))})
+                edit_width, EDIT_HEIGHT, {"Text": self.get_api_key()})
 
             y_pos += EDIT_HEIGHT + VERT_SEP
             preset = self.BACKEND_PRESETS[current_backend_idx]
@@ -1609,7 +1648,7 @@ class MainJob(unohelper.Base, XJobExecutor):
                     return
 
                 # 5. Start the API request without blocking LibreOffice's UI thread.
-                api_key = self.get_config("api_key", "") or os.environ.get("WRITER_AI_API_KEY", "")
+                api_key = self.get_api_key() or os.environ.get("WRITER_AI_API_KEY", "")
                 model = self.get_config("model", "kimi-k3")
                 endpoint = self.get_config("endpoint", "https://dashscope.aliyuncs.com/compatible-mode/v1")
                 self._start_format_request(target_doc, user_input, api_key, model, endpoint)
