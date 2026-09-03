@@ -709,7 +709,7 @@ class MainJob(unohelper.Base, XJobExecutor):
         return bool(value)
 
     BACKEND_PRESETS = [
-        ("Kimi K3", "chat", "https://api.moonshot.ai/v1"),
+        ("Kimi K3 (阿里云百炼)", "chat", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
     ]
     
     @staticmethod
@@ -870,9 +870,9 @@ class MainJob(unohelper.Base, XJobExecutor):
                 
         )
         if not api_key:
-            api_key = os.environ.get("KIMI_API_KEY", "")
+            api_key = os.environ.get("DASHSCOPE_API_KEY", "")
         if not api_key:
-            log_to_console("Kimi API key is not configured.")
+            log_to_console("Bailian API key is not configured.")
             return {}
 
         payload = json.dumps({
@@ -882,10 +882,9 @@ class MainJob(unohelper.Base, XJobExecutor):
                 {"role": "user", "content": query},
             ],
             "stream": False,
-            "reasoning_effort": "low",
         }).encode("utf-8")
         request = Request(
-            "https://api.moonshot.ai/v1/chat/completions",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
             data=payload,
             headers={
                 "Authorization": f"Bearer {api_key}",
@@ -998,7 +997,7 @@ class MainJob(unohelper.Base, XJobExecutor):
                 {"Dropdown": True, "StringItemList": backend_names, "SelectedItems": (current_backend_idx,)})
             
             y_pos += EDIT_HEIGHT + VERT_SEP
-            add("label_kimi_api_key", "FixedText", HORI_MARGIN, y_pos + 4, LABEL_WIDTH, LABEL_HEIGHT, {"Label": "Kimi API Key:"})
+            add("label_kimi_api_key", "FixedText", HORI_MARGIN, y_pos + 4, LABEL_WIDTH, LABEL_HEIGHT, {"Label": "百炼 Kimi API Key:"})
             controls["kimi_api_key"] = add("edit_kimi_api_key", "Edit", HORI_MARGIN + LABEL_WIDTH, y_pos,
                 edit_width, EDIT_HEIGHT, {"Text": str(self.get_config("kimi_api_key", ""))})
 
@@ -1172,7 +1171,7 @@ class MainJob(unohelper.Base, XJobExecutor):
 
                 # 5. AI Process & Execution
                 # Note: Passing target_doc to your formatting logic is CRITICAL
-                kimi_api_key = self.get_config("kimi_api_key", "") or os.environ.get("KIMI_API_KEY", "")
+                kimi_api_key = self.get_config("kimi_api_key", "") or os.environ.get("DASHSCOPE_API_KEY", "")
                 format_request = MainJob.askKimi(user_input, kimi_api_key)
                 
                 # Make sure your Format class is initialized with the CORRECT doc
