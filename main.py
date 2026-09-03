@@ -182,7 +182,7 @@ def validate_format_request(request, report=None):
             structure = {}
             if isinstance(value.get("infer"), bool):
                 structure["infer"] = value["infer"]
-            for role in {"title", "heading_1", "heading_2", "body"}:
+            for role in {"title", "heading_1", "heading_2", "heading_3", "body"}:
                 if role in value:
                     role_style = value[role]
                     if role_style is True:
@@ -191,7 +191,7 @@ def validate_format_request(request, report=None):
                         clean_style = validate_style(role_style, FORMAT_KEYS, report)
                         if clean_style:
                             structure[role] = clean_style
-            if len(structure) > 1 or any(role in structure for role in {"title", "heading_1", "heading_2", "body"}):
+            if len(structure) > 1 or any(role in structure for role in {"title", "heading_1", "heading_2", "heading_3", "body"}):
                 clean_request[scope] = structure
         elif scope == "tables":
             if not isinstance(value, dict):
@@ -349,6 +349,20 @@ class Format:
         text = text.strip()
         return bool(text) and len(text) <= 40 and not re.search(r"[。！？.!?；;]$", text)
 
+    @staticmethod
+    def _heading_level_from_style(style):
+        match = re.fullmatch(r"Heading ([1-3])", str(style))
+        return int(match.group(1)) if match else None
+
+    @staticmethod
+    def _inferred_heading_level(text):
+        text = text.strip()
+        if re.match(r"^\d+\.\d+(?:\.\d+)?[、. ]+", text):
+            return 2
+        if re.match(r"^(?:第[一二三四五六七八九十百千万]+章|\d+[、. )])\s*", text):
+            return 1
+        return None
+
     def _paragraph_role(self, paragraph, first_content_seen):
         style = paragraph.ParaStyleName
         if style in {"Title", "Subtitle"}:
@@ -357,10 +371,12 @@ class Format:
             "Text Body", "Body Text", "Default Paragraph Style", "Standard"
         }:
             return "title"
-        if style == "Heading 1":
-            return "heading_1"
-        if style == "Heading 2":
-            return "heading_2"
+        heading_level = self._heading_level_from_style(style)
+        if heading_level:
+            return f"heading_{heading_level}"
+        inferred_level = self._inferred_heading_level(paragraph.String)
+        if inferred_level:
+            return f"heading_{inferred_level}"
         if style in {"Text Body", "Body Text", "Default Paragraph Style", "Standard"}:
             return "body"
         if not first_content_seen:
@@ -375,7 +391,7 @@ class Format:
             return
         infer = options.get("infer", False) is True
         first_content_seen = False
-        roles = {"title", "heading_1", "heading_2", "body"}
+        roles = {"title", "heading_1", "heading_2", "heading_3", "body"}
         paragraphs = list(self._paragraphs())
         style_assignments = []
         indent_assignments = []
@@ -384,7 +400,8 @@ class Format:
                 continue
             role = self._paragraph_role(paragraph, first_content_seen) if infer else {
                 "Title": "title", "Subtitle": "title", "Heading 1": "heading_1",
-                "Heading 2": "heading_2", "Text Body": "body", "Body Text": "body",
+                "Heading 2": "heading_2", "Heading 3": "heading_3",
+                "Text Body": "body", "Body Text": "body",
                 "Default Paragraph Style": "body", "Standard": "body",
             }.get(paragraph.ParaStyleName)
             if role not in roles or role not in options:
@@ -401,7 +418,8 @@ class Format:
                 continue
             style_name = {
                 "title": "Title", "heading_1": "Heading 1",
-                "heading_2": "Heading 2", "body": "Text Body",
+                "heading_2": "Heading 2", "heading_3": "Heading 3",
+                "body": "Text Body",
             }[role]
             apply_styles(self, cursor, role_options)
             if "first_line_indent" in role_options:
@@ -1474,9 +1492,10 @@ class MainJob(unohelper.Base, XJobExecutor):
                                These paragraph locations are independent of page layout.
                                Table cells use "tables": {"table_1": {"cells": {"row_1_col_1": { ... }}}}.
                             9. Document structure: use "structure" with optional "title", "heading_1",
-                               "heading_2", and "body" format objects. Set "infer": true only when
+                               "heading_2", "heading_3", and "body" format objects. Set "infer": true only when
                                the document lacks paragraph styles; the first non-empty paragraph is
-                               treated as the title and short punctuation-free paragraphs as headings.
+                               treated as the title. Numbered headings such as "1. Method" and
+                               "1.1 Data" map to heading_1 and heading_2.
                                Table properties: "cell_background", "table_background", "header": true,
                                "header_background", "header_bold", "repeat_header", "first_column_bold",
                                "zebra", "zebra_background", "row_height", "border_color", "border_width",

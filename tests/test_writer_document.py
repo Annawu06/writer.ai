@@ -82,6 +82,28 @@ class WriterDocumentTests(unittest.TestCase):
         self.assertIn(paragraphs[1].ParaStyleName, {"Text Body", "Standard"})
         self.assertGreater(paragraphs[1].ParaFirstLineIndent, 0)
 
+    def test_numbered_heading_inference(self):
+        cursor = self.doc.Text.createTextCursor()
+        for index, text in enumerate(("论文标题", "1. 方法", "1.1 数据处理", "这是正文。")):
+            if index:
+                self.doc.Text.insertControlCharacter(
+                    cursor,
+                    uno.getConstantByName("com.sun.star.text.ControlCharacter.PARAGRAPH_BREAK"),
+                    False,
+                )
+            self.doc.Text.insertString(cursor, text, False)
+
+        self.formatter.format_document_structure({
+            "infer": True,
+            "title": True,
+            "heading_1": True,
+            "heading_2": True,
+            "body": True,
+        })
+        paragraphs = list(self.formatter._paragraphs())
+        self.assertEqual(paragraphs[1].ParaStyleName, "Heading 1")
+        self.assertEqual(paragraphs[2].ParaStyleName, "Heading 2")
+
     def test_table_formatting(self):
         table = self.doc.createInstance("com.sun.star.text.TextTable")
         table.initialize(2, 2)
