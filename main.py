@@ -1327,12 +1327,14 @@ class MainJob(unohelper.Base, XJobExecutor):
                 validation_warnings = []
                 request_errors = []
             if not format_request:
+                message = "Unable to complete the formatting request."
                 if request_errors:
-                    self._message_box(
-                        target_doc,
-                        "writer.ai 请求失败",
-                        "Unable to complete the formatting request:\n\n" + "\n".join(request_errors),
-                    ).execute()
+                    message += "\n\n" + "\n".join(request_errors)
+                elif validation_warnings:
+                    message += "\n\nThe model returned an unsupported formatting plan. Please try again."
+                else:
+                    message += "\n\nThe model returned no executable formatting instructions."
+                self._message_box(target_doc, "Writer.AI Request Error", message).execute()
                 log_to_console("Formatting was not completed because the model returned no instructions.")
                 return
 
@@ -1419,6 +1421,12 @@ class MainJob(unohelper.Base, XJobExecutor):
             return
         try:
             handler = self._password_interaction_handler()
+            container.allowPersistentStoring(True)
+            try:
+                container.useDefaultMasterPassword(handler)
+            except Exception:
+                # LibreOffice may already have an active master-password setup.
+                pass
             container.addPersistent(
                 self.PASSWORD_URL, self.PASSWORD_USER, (api_key,), handler
             )
@@ -1752,7 +1760,10 @@ class MainJob(unohelper.Base, XJobExecutor):
         # The returned JSON is still checked by validate_format_request below.
         system_prompt = """
 You are Writer.AI, a LibreOffice Writer formatting assistant. Return ONLY one
-JSON object. Valid scopes: selection, all_pages, paragraph_N, paragraph_text,
+JSON object in the exact format below. Do not return a generic {"scope": ...,
+"properties": ...} object. For example, "bold the first line" must be
+{"paragraph_1":{"bold":true}}, and "highlight the first line" must be
+{"paragraph_1":{"highlight":true}}. Valid scopes: selection, all_pages, paragraph_N, paragraph_text,
 paragraphs, structure, page_N, tables, and table_N. Valid properties include
 bold, italic, underline, font_size, font_color, font_name, highlight,
 remove_highlight, align_center, align_left, align_right, align_justify, title,
