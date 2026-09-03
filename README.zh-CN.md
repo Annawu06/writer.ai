@@ -65,6 +65,10 @@ API 返回内容校验测试。
 英文文档请参阅 [README.md](README.md)，版本记录请参阅
 [CHANGELOG.md](CHANGELOG.md)。
 
-## 许可证
+## 版权所有与使用限制
 
-当前尚未指定许可证。
+Copyright (c) 2026 Anna Wu. All rights reserved.
+
+本项目不是开源软件。未经版权所有者事先书面许可，任何人不得复制、修改、
+再发布、再授权或将源代码、发行包用于商业目的。完整声明请参阅
+[LICENSE](LICENSE)。

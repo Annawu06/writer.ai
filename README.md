@@ -66,6 +66,11 @@ tests, table formatting tests, and API response validation tests.
 See [README.zh-CN.md](README.zh-CN.md) for the Chinese documentation and
 [CHANGELOG.md](CHANGELOG.md) for release history.
 
-## License
+## Copyright and usage
 
-License information has not yet been specified.
+Copyright (c) 2026 Anna Wu. All rights reserved.
+
+This project is not open source. No permission is granted to copy, modify,
+redistribute, sublicense, or use the source code or release package for
+commercial purposes without prior written permission from the copyright owner.
+See [LICENSE](LICENSE) for the full notice.
