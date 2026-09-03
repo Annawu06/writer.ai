@@ -208,6 +208,23 @@ def validate_format_request(request):
         else:
             log_to_console(f"Ignoring unsupported formatting scope: {scope}")
     return clean_request
+
+
+def count_format_operations(request):
+    """Count executable leaf properties in a validated formatting request."""
+    if not isinstance(request, dict):
+        return 0
+    count = 0
+    for key, value in request.items():
+        if key == "tables" and isinstance(value, dict):
+            count += sum(count_format_operations(item) for item in value.values())
+        elif key in {"paragraphs", "structure"} and isinstance(value, dict):
+            count += sum(count_format_operations(item) for item in value.values() if isinstance(item, dict))
+        elif isinstance(value, dict):
+            count += count_format_operations(value)
+        else:
+            count += 1
+    return count
     
        
 class Format:
@@ -1124,7 +1141,11 @@ class MainJob(unohelper.Base, XJobExecutor):
         preview = json.dumps(format_request, ensure_ascii=False, indent=2)
         if len(preview) > 6000:
             preview = preview[:6000] + "\n... (preview truncated)"
-        message = "The following formatting plan will be applied:\n\n" + preview + "\n\nApply it?"
+        operation_count = count_format_operations(format_request)
+        message = (
+            f"Validated formatting plan ({operation_count} operations):\n\n"
+            + preview + "\n\nApply it?"
+        )
         return self._message_box(target_doc, "writer.ai Preview", message).execute() == YES
 
     def _confirm_undo(self, target_doc):
