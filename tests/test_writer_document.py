@@ -129,6 +129,17 @@ class WriterDocumentTests(unittest.TestCase):
         self.formatter.format_table(table, {"caption": "实验结果", "number": 3})
         self.assertIn("表3：实验结果", self.doc.Text.String)
 
+    def test_table_page_break_properties(self):
+        table = self.doc.createInstance("com.sun.star.text.TextTable")
+        table.initialize(2, 1)
+        self.doc.Text.insertTextContent(self.doc.Text.createTextCursor(), table, False)
+        self.formatter.format_table(table, {
+            "split": False,
+            "keep_together": True,
+        })
+        self.assertFalse(table.Split)
+        self.assertTrue(table.KeepTogether)
+
     def test_empty_document(self):
         paragraphs = list(self.formatter._paragraphs())
         self.assertTrue(all(not paragraph.String for paragraph in paragraphs))

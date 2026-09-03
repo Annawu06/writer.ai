@@ -85,12 +85,12 @@ TABLE_KEYS = {
     "first_column_bold", "zebra", "zebra_background", "row_height",
     "border_color", "border_width", "column_widths",
     "merge_cells", "auto_align",
-    "caption", "title", "number", "caption_prefix",
+    "caption", "title", "number", "caption_prefix", "split", "keep_together",
 }
 
 
 def _valid_value(key, value):
-    if key in {"bold", "italic", "remove_highlight", "clear_format", "title", "body", "insert_before", "header", "format_header", "header_bold", "repeat_header", "first_column_bold", "zebra", "auto_align"}:
+    if key in {"bold", "italic", "remove_highlight", "clear_format", "title", "body", "insert_before", "header", "format_header", "header_bold", "repeat_header", "first_column_bold", "zebra", "auto_align", "split", "keep_together"}:
         return isinstance(value, bool)
     if key in {"font_size", "first_line_indent", "row_height", "border_width", "number"}:
         return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
@@ -899,6 +899,10 @@ class Format:
     def format_table(self, table, options):
         """Format all cells and optionally the first row as a header."""
         self._insert_table_caption(table, options)
+        if "split" in options:
+            table.Split = options["split"]
+        if "keep_together" in options:
+            table.KeepTogether = options["keep_together"]
         for merge in options.get("merge_cells", []):
             try:
                 table_cursor = table.createCursorByCellName(merge["start"])
@@ -1481,7 +1485,8 @@ class MainJob(unohelper.Base, XJobExecutor):
                                "auto_align" (true for automatic numeric/date alignment),
                                "align" (left/right/center/justify), "font_name", "font_size", and "font_color",
                                "caption"/"title" (table title text), "number" (table number), and
-                               "caption_prefix" (default "表").
+                               "caption_prefix" (default "表"), "split" (allow table across pages),
+                               and "keep_together" (keep table with following content).
 
                             # 5. Text Insertion & Spatial Localization Protocol
                             If the user wants to add, insert, or format text, follow these STRICT structural rules:
