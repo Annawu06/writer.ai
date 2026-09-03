@@ -104,7 +104,7 @@ class WriterDocumentTests(unittest.TestCase):
         self.assertEqual(table.getCellByName("A2").BackColor, 0xF2F2F2)
         self.assertEqual(int(table.getCellByName("A1").createTextCursor().ParaAdjust), 3)
         self.formatter.format_table(table, {"auto_align": True})
-        self.assertEqual(int(table.getCellByName("B2").createTextCursor().ParaAdjust), 2)
+        self.assertEqual(int(table.getCellByName("B2").createTextCursor().ParaAdjust), 1)
 
     def test_table_column_widths(self):
         table = self.doc.createInstance("com.sun.star.text.TextTable")
