@@ -123,13 +123,50 @@ def validate_format_request(request):
             clean_style = validate_style(value, FORMAT_KEYS)
             if clean_style:
                 clean_request[scope] = clean_style
+        elif re.fullmatch(r"paragraph_\d+", str(scope)):
+            clean_style = validate_style(value, FORMAT_KEYS)
+            if clean_style:
+                clean_request[scope] = clean_style
+        elif scope == "paragraph_text":
+            if isinstance(value, dict) and isinstance(value.get("text"), str):
+                clean_style = validate_style(value.get("format", {}), FORMAT_KEYS)
+                if clean_style:
+                    clean_request[scope] = {"text": value["text"], "format": clean_style}
+        elif scope == "paragraphs":
+            if not isinstance(value, dict):
+                continue
+            paragraphs = {}
+            for paragraph_scope, paragraph_style in value.items():
+                if re.fullmatch(r"paragraph_\d+", str(paragraph_scope)):
+                    clean_style = validate_style(paragraph_style, FORMAT_KEYS)
+                    if clean_style:
+                        paragraphs[paragraph_scope] = clean_style
+                elif paragraph_scope == "contains" and isinstance(paragraph_style, dict) and isinstance(paragraph_style.get("text"), str):
+                    clean_style = validate_style(paragraph_style.get("format", {}), FORMAT_KEYS)
+                    if clean_style:
+                        paragraphs[paragraph_scope] = {"text": paragraph_style["text"], "format": clean_style}
+            if paragraphs:
+                clean_request[scope] = paragraphs
         elif scope == "tables":
             if not isinstance(value, dict):
                 continue
             tables = {}
             for table_scope, table_style in value.items():
                 if re.fullmatch(r"(?:table_\d+|table_all|all)", str(table_scope)):
-                    clean_style = validate_style(table_style, TABLE_KEYS)
+                    table_base = {
+                        key: item for key, item in table_style.items()
+                        if key != "cells"
+                    } if isinstance(table_style, dict) else table_style
+                    clean_style = validate_style(table_base, TABLE_KEYS)
+                    if isinstance(table_style, dict) and isinstance(table_style.get("cells"), dict):
+                        cells = {}
+                        for cell_scope, cell_style in table_style["cells"].items():
+                            if re.fullmatch(r"row_\d+_col_\d+", str(cell_scope)):
+                                cell_clean_style = validate_style(cell_style, FORMAT_KEYS)
+                                if cell_clean_style:
+                                    cells[cell_scope] = cell_clean_style
+                        if cells:
+                            clean_style["cells"] = cells
                     if clean_style:
                         tables[table_scope] = clean_style
             if tables:
@@ -214,6 +251,34 @@ class Format:
         cursor.gotoStart(False) 
         cursor.gotoEnd(True)  
         return cursor
+
+    def _paragraphs(self):
+        paragraphs = self.doc.Text.createEnumeration()
+        while paragraphs.hasMoreElements():
+            element = paragraphs.nextElement()
+            if element.supportsService("com.sun.star.text.Paragraph"):
+                yield element
+
+    def get_paragraph_cursor(self, paragraph_number):
+        """Return a cursor for a document paragraph using a stable ordinal."""
+        if paragraph_number < 1:
+            return None
+        for index, paragraph in enumerate(self._paragraphs(), start=1):
+            if index == paragraph_number:
+                cursor = self.doc.Text.createTextCursorByRange(paragraph.getStart())
+                cursor.gotoRange(paragraph.getEnd(), True)
+                return cursor
+        return None
+
+    def find_paragraph_cursor(self, text):
+        """Return the first paragraph containing text, independent of pagination."""
+        needle = str(text).casefold()
+        for paragraph in self._paragraphs():
+            if needle in paragraph.String.casefold():
+                cursor = self.doc.Text.createTextCursorByRange(paragraph.getStart())
+                cursor.gotoRange(paragraph.getEnd(), True)
+                return cursor
+        return None
         
     def get_all_lines_cursor(self, page_num):
 
@@ -575,6 +640,23 @@ class Format:
         match = re.search(r"(\d+)$", cell_name)
         return int(match.group(1)) if match else None
 
+    @staticmethod
+    def _column_name(column_number):
+        name = ""
+        while column_number > 0:
+            column_number, remainder = divmod(column_number - 1, 26)
+            name = chr(65 + remainder) + name
+        return name
+
+    def get_table_cell_cursor(self, table, row, column):
+        cell_name = f"{self._column_name(column)}{row}"
+        if cell_name not in table.getCellNames():
+            return None
+        cell = table.getCellByName(cell_name)
+        cursor = cell.createTextCursor()
+        cursor.gotoEnd(True)
+        return cursor
+
     def _format_table_cell(self, cell, options, is_header):
         cell_cursor = cell.createTextCursor()
         cell_cursor.gotoEnd(True)
@@ -618,10 +700,42 @@ def execute_format_request(format_request, fmt):
         return
 
     for page_key, page_value in format_request.items():
+        if re.fullmatch(r"paragraph_\d+", str(page_key)):
+            paragraph_cursor = fmt.get_paragraph_cursor(int(page_key.split("_")[1]))
+            if paragraph_cursor:
+                apply_styles(fmt, paragraph_cursor, page_value)
+            continue
+
+        if page_key == "paragraph_text":
+            paragraph_cursor = fmt.find_paragraph_cursor(page_value.get("text", ""))
+            if paragraph_cursor:
+                apply_styles(fmt, paragraph_cursor, page_value.get("format", {}))
+            continue
+
+        if page_key == "paragraphs":
+            for paragraph_key, paragraph_style in page_value.items():
+                if re.fullmatch(r"paragraph_\d+", str(paragraph_key)):
+                    paragraph_cursor = fmt.get_paragraph_cursor(int(paragraph_key.split("_")[1]))
+                    if paragraph_cursor:
+                        apply_styles(fmt, paragraph_cursor, paragraph_style)
+                elif paragraph_key == "contains" and isinstance(paragraph_style, dict):
+                    paragraph_cursor = fmt.find_paragraph_cursor(paragraph_style.get("text", ""))
+                    if paragraph_cursor:
+                        apply_styles(fmt, paragraph_cursor, paragraph_style.get("format", {}))
+            continue
+
         if page_key == "tables":
             for table_key, table_options in page_value.items():
                 for table in fmt.get_tables(table_key):
                     fmt.format_table(table, table_options)
+                    for cell_key, cell_style in table_options.get("cells", {}).items():
+                        cell_match = re.fullmatch(r"row_(\d+)_col_(\d+)", str(cell_key))
+                        if cell_match:
+                            cell_cursor = fmt.get_table_cell_cursor(
+                                table, int(cell_match.group(1)), int(cell_match.group(2))
+                            )
+                            if cell_cursor:
+                                apply_styles(fmt, cell_cursor, cell_style)
             continue
 
         if str(page_key).startswith("table_"):
@@ -987,6 +1101,11 @@ class MainJob(unohelper.Base, XJobExecutor):
                             5. Paragraph styles: "title": true, "body": true, or "paragraph_style": "Title" / "Text Body".
                             6. Tables: "tables": {"table_1": { ... }} or a top-level "table_1": { ... }.
                             7. Paragraph indentation: "first_line_indent": number of Chinese character widths.
+                            8. Stable locations: "paragraph_1": { ... },
+                               "paragraph_text": {"text": "keyword", "format": { ... }},
+                               or "paragraphs": {"paragraph_1": { ... }, "contains": {"text": "keyword", "format": { ... }}}.
+                               These paragraph locations are independent of page layout.
+                               Table cells use "tables": {"table_1": {"cells": {"row_1_col_1": { ... }}}}.
                                Table properties: "cell_background", "table_background", "header": true,
                                "header_background", "header_bold", "align" (left/right/center/justify),
                                "font_name", "font_size", and "font_color".
