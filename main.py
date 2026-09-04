@@ -24,7 +24,7 @@ from com.sun.star.style.ParagraphAdjust import LEFT, RIGHT, CENTER, BLOCK
 
 from com.sun.star.ui.dialogs.TemplateDescription import FILEOPEN_SIMPLE
 
-from com.sun.star.awt.MessageBoxButtons import BUTTONS_YES_NO
+from com.sun.star.awt.MessageBoxButtons import BUTTONS_OK, BUTTONS_YES_NO
 from com.sun.star.awt.MessageBoxResults import YES
 
 from com.sun.star.awt.FontWeight import NORMAL
@@ -76,7 +76,11 @@ def _run_next_format_request():
             return
         job, target_doc, query, api_key, model, endpoint = _FORMAT_REQUEST_QUEUE.popleft()
         _FORMAT_REQUEST_ACTIVE = True
-    job._launch_format_request(target_doc, query, api_key, model, endpoint)
+    try:
+        job._launch_format_request(target_doc, query, api_key, model, endpoint)
+    except Exception as error:
+        log_to_console(f"Unable to start queued formatting request: {error}")
+        _finish_queued_format_request()
 
 
 def _finish_queued_format_request():
@@ -1369,7 +1373,7 @@ class MainJob(unohelper.Base, XJobExecutor):
         frame = target_doc.getCurrentController().getFrame()
         parent_window = frame.getContainerWindow() if frame else None
         toolkit = self.sm.createInstanceWithContext("com.sun.star.awt.Toolkit", self.ctx)
-        return toolkit.createMessageBox(parent_window, "querybox", BUTTONS_YES_NO, title, message)
+        return toolkit.createMessageBox(parent_window, "errorbox", BUTTONS_OK, title, message)
 
     def _start_format_request(self, target_doc, query, api_key, model, endpoint):
         with _FORMAT_REQUEST_QUEUE_LOCK:

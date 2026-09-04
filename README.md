@@ -13,7 +13,7 @@ applies changes as one undoable operation.
 - Support zebra rows, automatic numeric/date alignment, first-column emphasis, cell merging, and numbered captions.
 - Control table pagination with repeated headers, table splitting, and keep-together behavior.
 - Apply validated formatting plans automatically, undo the complete operation,
-  and use a 60-second timeout.
+  and use a 30-second timeout.
 - Work with Kimi K3 and other OpenAI-compatible API providers.
 
 ## Requirements
@@ -48,7 +48,7 @@ configuration for future Writer sessions.
 5. Use LibreOffice's Ctrl+Z to revert the complete formatting operation if needed.
 
 While a request is running, the Writer status bar shows the analysis state.
-Requests use a 60-second timeout. This does not undo formatting that has
+Requests use a 30-second timeout. This does not undo formatting that has
 already been applied; use `Ctrl+Z` to undo applied changes.
 
 ## Development
