@@ -6,6 +6,7 @@ import os
 import traceback
 import sys # To print to stderr
 import threading
+from collections import deque
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from com.sun.star.task import XJobExecutor
@@ -61,6 +62,28 @@ def log_to_console(*args):
     """Prints messages to the console for debugging."""
     print(*args, file=sys.stderr)
     sys.stderr.flush()
+
+
+_FORMAT_REQUEST_QUEUE = deque()
+_FORMAT_REQUEST_QUEUE_LOCK = threading.Lock()
+_FORMAT_REQUEST_ACTIVE = False
+
+
+def _run_next_format_request():
+    global _FORMAT_REQUEST_ACTIVE
+    with _FORMAT_REQUEST_QUEUE_LOCK:
+        if _FORMAT_REQUEST_ACTIVE or not _FORMAT_REQUEST_QUEUE:
+            return
+        job, target_doc, query, api_key, model, endpoint = _FORMAT_REQUEST_QUEUE.popleft()
+        _FORMAT_REQUEST_ACTIVE = True
+    job._launch_format_request(target_doc, query, api_key, model, endpoint)
+
+
+def _finish_queued_format_request():
+    global _FORMAT_REQUEST_ACTIVE
+    with _FORMAT_REQUEST_QUEUE_LOCK:
+        _FORMAT_REQUEST_ACTIVE = False
+    _run_next_format_request()
 
 
 def get_doc(ctx):
@@ -1259,6 +1282,7 @@ class MainJob(unohelper.Base, XJobExecutor):
             traceback.print_exc(file=sys.stderr)
         finally:
             self._end_status_indicator()
+            _finish_queued_format_request()
 
     def _start_status_indicator(self, target_doc):
         self._end_status_indicator()
@@ -1348,6 +1372,16 @@ class MainJob(unohelper.Base, XJobExecutor):
         return toolkit.createMessageBox(parent_window, "querybox", BUTTONS_YES_NO, title, message)
 
     def _start_format_request(self, target_doc, query, api_key, model, endpoint):
+        with _FORMAT_REQUEST_QUEUE_LOCK:
+            _FORMAT_REQUEST_QUEUE.append(
+                (self, target_doc, query, api_key, model, endpoint)
+            )
+            queued = _FORMAT_REQUEST_ACTIVE or len(_FORMAT_REQUEST_QUEUE) > 1
+        if queued:
+            log_to_console("Formatting request queued; waiting for the previous request.")
+        _run_next_format_request()
+
+    def _launch_format_request(self, target_doc, query, api_key, model, endpoint):
         if self._request_in_progress:
             log_to_console("A formatting request is already running.")
             return
