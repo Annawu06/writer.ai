@@ -52,12 +52,6 @@ class MainLogicTests(unittest.TestCase):
             },
         )
 
-    def test_format_preview_uses_user_friendly_summary(self):
-        summary = main.summarize_format_request({
-            "page_1": {"line_1": {"highlight": True}},
-        })
-        self.assertEqual(summary, ["page 1, line 1: Highlight (yellow)"])
-
     def test_column_name_conversion(self):
         self.assertEqual(main.Format._column_name(1), "A")
         self.assertEqual(main.Format._column_name(26), "Z")

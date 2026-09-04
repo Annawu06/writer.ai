@@ -1,8 +1,8 @@
 # Writer.AI
 
 Writer.AI is an AI-assisted formatting extension for LibreOffice Writer. It
-converts natural-language instructions into a validated formatting plan, shows
-the plan for confirmation, and applies changes as one undoable operation.
+converts natural-language instructions into a validated formatting plan and
+applies changes as one undoable operation.
 
 ## Features
 
@@ -12,7 +12,8 @@ the plan for confirmation, and applies changes as one undoable operation.
 - Format table headers, backgrounds, borders, fonts, alignment, row height, and column widths.
 - Support zebra rows, automatic numeric/date alignment, first-column emphasis, cell merging, and numbered captions.
 - Control table pagination with repeated headers, table splitting, and keep-together behavior.
-- Preview formatting plans, undo the complete operation, cancel requests, and use a 60-second timeout.
+- Apply validated formatting plans automatically, undo the complete operation,
+  and use a 60-second timeout.
 - Work with Kimi K3 and other OpenAI-compatible API providers.
 
 ## Requirements
@@ -43,8 +44,8 @@ configuration for future Writer sessions.
 1. Open a Writer document.
 2. Select **Writer.AI > AI Formatter**.
 3. Enter an instruction, such as `Indent every paragraph by two characters`.
-4. Review the validated plan and choose **Yes** to apply it.
-5. Use LibreOffice's `Ctrl+Z` to revert the complete formatting operation if needed.
+4. The validated plan is applied automatically.
+5. Use LibreOffice's Ctrl+Z to revert the complete formatting operation if needed.
 
 While a request is running, the Writer status bar shows the analysis state.
 Requests use a 60-second timeout. This does not undo formatting that has

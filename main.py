@@ -254,100 +254,6 @@ def count_format_operations(request):
     return count
 
 
-PREVIEW_PROPERTY_LABELS = {
-    "bold": "Bold",
-    "italic": "Italic",
-    "underline": "Underline",
-    "font_size": "Font size",
-    "font_color": "Font color",
-    "font_name": "Font",
-    "font_family": "Font",
-    "highlight": "Highlight",
-    "remove_highlight": "Remove highlight",
-    "align_center": "Center alignment",
-    "align_left": "Left alignment",
-    "align_right": "Right alignment",
-    "align_justify": "Justified alignment",
-    "first_line_indent": "First-line indentation",
-    "header": "Format header",
-    "header_background": "Header background",
-    "table_background": "Table background",
-    "cell_background": "Cell background",
-    "row_height": "Row height",
-    "column_widths": "Column widths",
-    "caption": "Table caption",
-    "title": "Title style",
-}
-
-
-def _preview_target(scope):
-    if scope == "all_pages" or scope in {"document", "entire_doc"}:
-        return "the entire document"
-    match = re.fullmatch(r"page_(\d+)", str(scope))
-    if match:
-        return f"page {match.group(1)}"
-    match = re.fullmatch(r"paragraph_(\d+)", str(scope))
-    if match:
-        return f"paragraph {match.group(1)}"
-    match = re.fullmatch(r"table_(\d+)", str(scope))
-    if match:
-        return f"table {match.group(1)}"
-    if scope == "selection":
-        return "the current selection"
-    if scope == "paragraph_text":
-        return "the paragraph containing the keyword"
-    return str(scope)
-
-
-def summarize_format_request(request):
-    """Create a short user-facing summary without exposing model JSON."""
-    summaries = []
-
-    def visit(value, target):
-        if not isinstance(value, dict):
-            return
-        for key, item in value.items():
-            if key == "line_all":
-                visit(item, target + ", all rows")
-            elif re.fullmatch(r"line_\d+", str(key)):
-                visit(item, target + ", line " + key.replace("line_", ""))
-            elif key == "tables":
-                visit(item, target)
-            elif re.fullmatch(r"table_\d+", str(key)):
-                visit(item, _preview_target(key))
-            elif key == "cells":
-                visit(item, target)
-            elif re.fullmatch(r"row_\d+_col_\d+", str(key)):
-                cell_name = key.replace("row_", "row ").replace("_col_", ", column ")
-                visit(item, target + ", " + cell_name)
-            elif key in {"paragraphs", "structure"}:
-                visit(item, target)
-            elif key == "contains":
-                if isinstance(item, dict):
-                    keyword = item.get("text", "")
-                    visit(item.get("format", {}), f"the paragraph containing '{keyword}'")
-            elif key == "paragraph_text":
-                if isinstance(item, dict):
-                    visit(item.get("format", {}), "the paragraph containing the keyword")
-            elif isinstance(item, dict):
-                visit(item, _preview_target(key) if key != "title" else target)
-            else:
-                label = PREVIEW_PROPERTY_LABELS.get(key, key)
-                if item is True and key in {"bold", "italic", "align_center", "align_left", "align_right", "align_justify", "header"}:
-                    detail = ""
-                elif key == "highlight" and item is True:
-                    detail = " (yellow)"
-                elif key == "remove_highlight" and item is True:
-                    detail = ""
-                else:
-                    detail = f"：{item}"
-                summaries.append(f"{target}: {label}{detail}")
-
-    for scope, value in request.items() if isinstance(request, dict) else ():
-        visit(value, _preview_target(scope))
-    return summaries
-    
-       
 class Format:
 
     def __init__(self, ctx, doc):
@@ -1338,10 +1244,6 @@ class MainJob(unohelper.Base, XJobExecutor):
                 log_to_console("Formatting was not completed because the model returned no instructions.")
                 return
 
-            if not self._confirm_format_preview(target_doc, format_request, validation_warnings):
-                log_to_console("Formatting cancelled after preview.")
-                return
-
             fmt = Format(self.ctx, target_doc)
             undo_manager = target_doc.getUndoManager()
             undo_manager.enterUndoContext("writer.ai formatting")
@@ -1444,32 +1346,6 @@ class MainJob(unohelper.Base, XJobExecutor):
         parent_window = frame.getContainerWindow() if frame else None
         toolkit = self.sm.createInstanceWithContext("com.sun.star.awt.Toolkit", self.ctx)
         return toolkit.createMessageBox(parent_window, "querybox", BUTTONS_YES_NO, title, message)
-
-    def _confirm_format_preview(self, target_doc, format_request, validation_warnings=None):
-        operation_count = count_format_operations(format_request)
-        summary = summarize_format_request(format_request)
-        if not summary:
-            summary = ["No executable formatting operations were recognized"]
-        message = (
-            f"Formatting plan ({operation_count} operations):\n\n- "
-            + "\n- ".join(summary[:30])
-            + ("\n- ..." if len(summary) > 30 else "")
-            + "\n\nApply it?"
-        )
-        warnings = [warning for warning in (validation_warnings or []) if isinstance(warning, str)]
-        if warnings:
-            message = (
-                "The following returned instructions were ignored:\n- "
-                + "\n- ".join(warnings[:20])
-                + ("\n- ..." if len(warnings) > 20 else "")
-                + "\n\n"
-                + message
-            )
-        return self._message_box(target_doc, "writer.ai Preview", message).execute() == YES
-
-    def _confirm_undo(self, target_doc):
-        message = "Formatting was applied. Undo this formatting operation now?"
-        return self._message_box(target_doc, "writer.ai", message).execute() == YES
 
     def _start_format_request(self, target_doc, query, api_key, model, endpoint):
         if self._request_in_progress:
