@@ -1,11 +1,15 @@
 # Changelog
 
+## 1.1.2 - 2026-09-04
+
+- Queue consecutive formatting requests and apply them in submission order.
+- Remove the formatting-plan confirmation dialog.
+
 ## 1.1.1 - 2026-09-03
 
 - Enable persistent LibreOffice password storage for API keys.
 - Enforce the current formatting JSON structure in the model prompt.
 - Show a clear error when no executable formatting instructions are returned.
-- Apply validated formatting plans automatically without a confirmation dialog.
 
 ## 1.1.0 - 2026-09-03
 
