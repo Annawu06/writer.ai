@@ -716,12 +716,11 @@ class Format:
                 selection = self.doc.getCurrentController().getSelection()
                 if selection and selection.getCount() > 0:
                     selected_range = selection.getByIndex(0)
-                    return self.doc.Text.createTextCursorByRange(selected_range)
+                    if selected_range.getString():
+                        return self.doc.Text.createTextCursorByRange(selected_range)
             except Exception as e:
                 log_to_console(f"Error getting selection cursor: {e}")
-            
-            # 修复点：确保这里也使用 self.doc 或调用已有的获取全篇游标的方法
-            return self.get_document_cursor()
+            return None
 
     def insert_text_at_cursor(self, cursor, text, insert_before=True):
         """
@@ -1053,7 +1052,10 @@ def execute_format_request(format_request, fmt):
         # 如果 key 是 selection，或者 page_value 包含特定指示
         if page_key == "selection":
             cursor = fmt.get_selection_cursor() # 你需要在 Format 类实现这个方法
-            apply_styles(fmt, cursor, page_value)
+            if cursor:
+                apply_styles(fmt, cursor, page_value)
+            else:
+                log_to_console("Selection formatting skipped because no text is selected.")
             continue
 
         if page_key in ["all_pages", "document", "entire_doc"]:

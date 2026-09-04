@@ -167,6 +167,9 @@ class WriterDocumentTests(unittest.TestCase):
         paragraphs = list(self.formatter._paragraphs())
         self.assertTrue(all(not paragraph.String for paragraph in paragraphs))
 
+    def test_selection_formatting_requires_selected_text(self):
+        self.assertIsNone(self.formatter.get_selection_cursor())
+
     def test_async_callback_returns_to_writer(self):
         received = []
 
