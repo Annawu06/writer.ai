@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 - 2026-11-01
 
 - Reject stale AI plans if the document changes while a request is pending;
   selection instructions also require the original selection.
