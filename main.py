@@ -2,6 +2,7 @@ import uno
 import re
 import unohelper
 import json
+import math
 import os
 import traceback
 import sys # To print to stderr
@@ -9,13 +10,13 @@ import threading
 from collections import deque
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from urllib.parse import urlparse
 from com.sun.star.task import XJobExecutor
-from com.sun.star.awt import MessageBoxButtons as MSG_BUTTONS
+from com.sun.star.util import XModifyListener
 from com.sun.star.awt import XActionListener, XItemListener
 from com.sun.star.awt import XCallback
-from com.sun.star.awt.PosSize import POS, SIZE, POSSIZE
+from com.sun.star.awt.PosSize import SIZE, POSSIZE
 from com.sun.star.awt.PushButtonType import OK, CANCEL
-from com.sun.star.util.MeasureUnit import TWIP
 
 from com.sun.star.awt.FontWeight import BOLD
 from com.sun.star.awt.FontSlant import ITALIC
@@ -69,17 +70,72 @@ _FORMAT_REQUEST_QUEUE_LOCK = threading.Lock()
 _FORMAT_REQUEST_ACTIVE = False
 
 
+class DocumentGuard(unohelper.Base, XModifyListener):
+    """Detect edits and selection movement while a model request is pending."""
+
+    def __init__(self, doc):
+        self.doc = doc
+        self.changed = False
+        self.disposed = False
+        self.selection = None
+        try:
+            selected = doc.getCurrentController().getSelection()
+            if selected and selected.getCount() == 1:
+                self.selection = doc.Text.createTextCursorByRange(selected.getByIndex(0))
+        except Exception:
+            pass
+        doc.addModifyListener(self)
+
+    def modified(self, event):
+        self.changed = True
+
+    def disposing(self, event):
+        self.disposed = True
+
+    def selection_matches(self):
+        if self.selection is None:
+            return False
+        try:
+            selected = self.doc.getCurrentController().getSelection()
+            if not selected or selected.getCount() != 1:
+                return False
+            current = selected.getByIndex(0)
+            text = self.doc.Text
+            return (text.compareRegionStarts(self.selection, current) == 0
+                    and text.compareRegionEnds(self.selection, current) == 0)
+        except Exception:
+            return False
+
+    def can_apply(self, plan):
+        if self.changed or self.disposed:
+            return False
+        try:
+            if self.doc.getCurrentController() is None:
+                return False
+        except Exception:
+            return False
+        return "selection" not in plan or self.selection_matches()
+
+    def close(self):
+        if not self.disposed:
+            try:
+                self.doc.removeModifyListener(self)
+            except Exception:
+                pass
+
+
 def _run_next_format_request():
     global _FORMAT_REQUEST_ACTIVE
     with _FORMAT_REQUEST_QUEUE_LOCK:
         if _FORMAT_REQUEST_ACTIVE or not _FORMAT_REQUEST_QUEUE:
             return
-        job, target_doc, query, api_key, model, endpoint = _FORMAT_REQUEST_QUEUE.popleft()
+        job, target_doc, query, api_key, model, endpoint, guard = _FORMAT_REQUEST_QUEUE.popleft()
         _FORMAT_REQUEST_ACTIVE = True
     try:
-        job._launch_format_request(target_doc, query, api_key, model, endpoint)
+        job._launch_format_request(target_doc, query, api_key, model, endpoint, guard)
     except Exception as error:
         log_to_console(f"Unable to start queued formatting request: {error}")
+        guard.close()
         _finish_queued_format_request()
 
 
@@ -120,12 +176,20 @@ def _valid_value(key, value):
     if key in {"bold", "italic", "remove_highlight", "clear_format", "title", "body", "insert_before", "header", "format_header", "header_bold", "repeat_header", "first_column_bold", "zebra", "auto_align", "split", "keep_together"}:
         return isinstance(value, bool)
     if key in {"font_size", "first_line_indent", "row_height", "border_width", "number"}:
-        return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
+        limits = {
+            "font_size": (1, 200), "first_line_indent": (0, 20),
+            "row_height": (0, 1000), "border_width": (0, 20),
+            "number": (0, 100000),
+        }
+        low, high = limits[key]
+        return (isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(value) and low <= value <= high)
     if key == "column_widths":
         return (
             isinstance(value, list)
             and len(value) >= 2
-            and all(isinstance(item, (int, float)) and not isinstance(item, bool) and item > 0 for item in value)
+            and all(isinstance(item, (int, float)) and not isinstance(item, bool)
+                    and math.isfinite(item) and 0 < item <= 100 for item in value)
             and abs(sum(value) - 100) < 0.01
         )
     if key == "merge_cells":
@@ -135,11 +199,22 @@ def _valid_value(key, value):
                 isinstance(item, dict)
                 and isinstance(item.get("start"), str)
                 and isinstance(item.get("end"), str)
+                and re.fullmatch(r"[A-Z]{1,3}[1-9]\d{0,4}", item.get("start", ""))
+                and re.fullmatch(r"[A-Z]{1,3}[1-9]\d{0,4}", item.get("end", ""))
                 for item in value
             )
         )
-    if key in {"underline", "font_color", "font_name", "font_family", "highlight", "replace_text", "insert_text", "paragraph_style", "cell_background", "table_background", "header_background", "zebra_background", "border_color", "align", "caption", "title", "caption_prefix"}:
-        return isinstance(value, (str, int, float, bool))
+    if key == "underline":
+        return isinstance(value, bool) or (isinstance(value, str) and
+            bool(re.fullmatch(r"(?:[0-9]|1[0-8])(?:[0-9A-Fa-f]{6})?", value)))
+    if key in {"font_color", "highlight", "cell_background", "table_background", "header_background", "zebra_background", "border_color"}:
+        return (key == "highlight" and value is True) or (
+            isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 0xFFFFFF
+        ) or (isinstance(value, str) and bool(re.fullmatch(r"#?[0-9A-Fa-f]{6}", value)))
+    if key == "align":
+        return value in {"left", "right", "center", "justify"} if isinstance(value, str) else False
+    if key in {"font_name", "font_family", "replace_text", "insert_text", "paragraph_style", "caption", "caption_prefix"}:
+        return isinstance(value, str) and len(value) <= 10000
     if key.startswith("align_"):
         return isinstance(value, bool)
     return False
@@ -151,6 +226,52 @@ def _validation_issue(report, message):
     log_to_console(message)
 
 
+def parse_model_json(content):
+    """Read one JSON object, including a fenced or prose-wrapped response.
+
+    Keep repairs narrow: a guessed comma or quote can change a formatting
+    instruction, so malformed plans other than trailing commas are rejected.
+    """
+    if isinstance(content, dict):
+        return content
+    if not isinstance(content, str):
+        raise ValueError("The model response is not text or an object")
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", content):
+        candidate = content[match.start():]
+        for attempt in (candidate, _remove_trailing_commas(candidate)):
+            try:
+                result, _ = decoder.raw_decode(attempt)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(result, dict):
+                return result
+    raise ValueError("The model response contains no valid JSON object")
+
+
+def _remove_trailing_commas(text):
+    chars = []
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text):
+        if in_string:
+            chars.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+            chars.append(char)
+        elif char == "," and re.match(r"\s*[}\]]", text[index + 1:]):
+            continue
+        else:
+            chars.append(char)
+    return "".join(chars)
+
+
 def validate_style(style, allowed_keys, report=None):
     if not isinstance(style, dict):
         _validation_issue(report, "Ignoring formatting properties because the value is not an object")
@@ -160,7 +281,8 @@ def validate_style(style, allowed_keys, report=None):
         if key not in allowed_keys:
             _validation_issue(report, f"Ignoring unsupported formatting property: {key}")
             continue
-        if _valid_value(key, value):
+        if (isinstance(value, str) if key == "title" and allowed_keys is TABLE_KEYS
+                else _valid_value(key, value)):
             clean_style[key] = value
         else:
             _validation_issue(report, f"Ignoring invalid value for formatting property: {key}")
@@ -261,6 +383,8 @@ def validate_format_request(request, report=None):
                 clean_request[scope] = clean_style
         else:
             _validation_issue(report, f"Ignoring unsupported formatting scope: {scope}")
+    if report is not None and clean_request != request and not report:
+        _validation_issue(report, "Formatting plan contains unsupported or invalid structure")
     return clean_request
 
 
@@ -279,6 +403,15 @@ def count_format_operations(request):
         else:
             count += 1
     return count
+
+
+def changes_document_content(plan):
+    if isinstance(plan, dict):
+        return any(key in {"replace_text", "insert_text", "merge_cells"}
+                   or changes_document_content(value) for key, value in plan.items())
+    if isinstance(plan, list):
+        return any(changes_document_content(value) for value in plan)
+    return False
 
 
 class Format:
@@ -361,15 +494,17 @@ class Format:
         return None
 
     def find_paragraph_cursor(self, text):
-        """Return the first paragraph containing text, independent of pagination."""
+        """Resolve an unambiguous paragraph match, independent of pagination."""
         needle = str(text).casefold()
-        paragraphs = list(self._paragraphs())
-        for paragraph_index, paragraph in enumerate(paragraphs):
-            if needle in paragraph.String.casefold():
-                cursor = self.doc.Text.createTextCursorByRange(paragraph.getStart())
-                cursor.gotoRange(paragraph.getEnd(), True)
-                return cursor
-        return None
+        if not needle:
+            raise ValueError("Paragraph search text is empty")
+        matches = [paragraph for paragraph in self._paragraphs()
+                   if needle in paragraph.String.casefold()]
+        if len(matches) != 1:
+            raise ValueError(f"Paragraph search must match exactly one paragraph; found {len(matches)}")
+        cursor = self.doc.Text.createTextCursorByRange(matches[0].getStart())
+        cursor.gotoRange(matches[0].getEnd(), True)
+        return cursor
 
     @staticmethod
     def _is_probable_heading(text):
@@ -520,41 +655,6 @@ class Format:
         return cursor
         
         
-    def find_paragraphs_by_styles(doc, target_styles=None):
-        """
-        输入:
-            doc: LibreOffice 文档对象 (XComponent)
-            target_styles: 想要匹配的样式名称列表 (list)
-        输出:
-            matches: 包含匹配段落对象的列表
-        """
-        if target_styles is None:
-            target_styles = ["Title", "Subtitle", "Text body"] 
-            target_styles.extend([f"Heading {i}" for i in range(1, 11)])
-
-        matches = []
-        
-        # 遍历文档中的所有内容
-        paragraphs = doc.Text.createEnumeration()
-        
-        while paragraphs.hasMoreElements():
-            para = paragraphs.nextElement()
-
-            # 确保当前元素是一个段落（过滤掉表格等其他对象）
-            if para.supportsService("com.sun.star.text.Paragraph"):
-                # 检查段落样式是否在目标列表中
-                if para.ParaStyleName in target_styles:
-                    matches.append({
-                        "style": para.ParaStyleName,
-                        "text": para.String,
-                        "object": para  
-                    })
-                    
-
-        return matches
-
-
-
     # ------------------------------------------------
     # Text Style
     # ------------------------------------------------
@@ -596,8 +696,7 @@ class Format:
                 cursor.CharUnderlineHasColor = False
 
         except Exception as e:
-            log_to_console(f"Critical underline error: {e}")
-            cursor.CharUnderline = 0
+            raise RuntimeError("Unable to set underline") from e
 
 
     def set_font_name(self, cursor, font_name):
@@ -641,7 +740,7 @@ class Format:
                 cursor.CharFontNameComplex = target_font   
                 
             except Exception as e:
-                log_to_console(f"Error setting font name: {e}")
+                raise RuntimeError("Unable to set font name") from e
 
 
 
@@ -659,7 +758,7 @@ class Format:
             
             cursor.CharColor = int(rgb) 
         except Exception as e:
-            log_to_console(f"Error setting color: {e}")
+            raise RuntimeError("Unable to set font color") from e
 
 
     def highlight(self, cursor, color=None):
@@ -682,25 +781,15 @@ class Format:
     # ------------------------------------------------
 
     def align_center(self, cursor):
-
-        cursor.gotoStartOfParagraph(False)
-        cursor.gotoEndOfParagraph(True)
-
         cursor.ParaAdjust = CENTER
 
     def align_left(self, cursor):
-        cursor.gotoStartOfParagraph(False)
-        cursor.gotoEndOfParagraph(True)
         cursor.ParaAdjust = LEFT
 
     def align_right(self, cursor):
-        cursor.gotoStartOfParagraph(False)
-        cursor.gotoEndOfParagraph(True)
         cursor.ParaAdjust = RIGHT
 
     def align_justify(self, cursor):
-        cursor.gotoStartOfParagraph(False)
-        cursor.gotoEndOfParagraph(True)
         cursor.ParaAdjust = BLOCK
 
     # ------------------------------------------------
@@ -817,7 +906,7 @@ class Format:
             font_size = float(getattr(cursor, "CharHeight", 12) or 12)
             cursor.ParaFirstLineIndent = int(char_count * font_size * 2540 / 72)
         except (TypeError, ValueError) as e:
-            log_to_console(f"Invalid first-line indent: {e}")
+            raise RuntimeError("Invalid first-line indent") from e
 
     def _table_names(self):
         return list(self.doc.TextTables.getElementNames())
@@ -890,7 +979,7 @@ class Format:
                 cursor.ParaStyleName = style_name
             cursor.ParaAdjust = CENTER
         except Exception as e:
-            log_to_console(f"Error inserting table caption: {e}")
+            raise RuntimeError("Unable to insert table caption") from e
 
     def _format_table_cell(self, cell, options, is_header, is_first_column=False):
         cell_cursor = cell.createTextCursor()
@@ -935,7 +1024,7 @@ class Format:
                 for border_name in ("TopBorder", "BottomBorder", "LeftBorder", "RightBorder"):
                     setattr(cell, border_name, border)
             except Exception as e:
-                log_to_console(f"Error setting table border: {e}")
+                raise RuntimeError("Unable to set table border") from e
 
     def format_table(self, table, options):
         """Format all cells and optionally the first row as a header."""
@@ -950,7 +1039,7 @@ class Format:
                 table_cursor.gotoCellByName(merge["end"], True)
                 table_cursor.mergeRange()
             except Exception as e:
-                log_to_console(f"Error merging table cells: {e}")
+                raise RuntimeError("Unable to merge table cells") from e
 
         header = options.get("header", options.get("format_header", False))
         if options.get("repeat_header", False):
@@ -968,7 +1057,7 @@ class Format:
                         separators[index].IsVisible = True
                 table.TableColumnSeparators = tuple(separators)
             except Exception as e:
-                log_to_console(f"Error setting table column widths: {e}")
+                raise RuntimeError("Unable to set table column widths") from e
 
         row_height = options.get("row_height")
         if row_height is not None:
@@ -979,7 +1068,7 @@ class Format:
                     row.IsAutoHeight = False
                     row.Height = height
             except Exception as e:
-                log_to_console(f"Error setting table row height: {e}")
+                raise RuntimeError("Unable to set table row height") from e
 
         for cell_name in table.getCellNames():
             row_number = self._cell_row(cell_name)
@@ -996,6 +1085,38 @@ class Format:
         
     
   
+def precheck_format_request(format_request, fmt):
+    """Check target existence and ambiguous searches before changing the document."""
+    for scope, options in format_request.items():
+        if scope == "selection" and fmt.get_selection_cursor() is None:
+            raise ValueError("Select text before applying a selection instruction")
+        if re.fullmatch(r"paragraph_\d+", str(scope)):
+            if fmt.get_paragraph_cursor(int(scope.split("_")[1])) is None:
+                raise ValueError(f"Target {scope} does not exist")
+        if scope == "paragraph_text":
+            fmt.find_paragraph_cursor(options["text"])
+        if scope == "paragraphs":
+            for paragraph_scope, paragraph_style in options.items():
+                if paragraph_scope == "contains":
+                    fmt.find_paragraph_cursor(paragraph_style["text"])
+                elif fmt.get_paragraph_cursor(int(paragraph_scope.split("_")[1])) is None:
+                    raise ValueError(f"Target {paragraph_scope} does not exist")
+        table_scopes = options if scope == "tables" else {scope: options} if re.fullmatch(r"table_\d+", str(scope)) else {}
+        for table_scope, table_options in table_scopes.items():
+            tables = fmt.get_tables(table_scope)
+            if not tables:
+                raise ValueError(f"Target {table_scope} does not exist")
+            for table in tables:
+                names = set(table.getCellNames())
+                for cell_scope in table_options.get("cells", {}):
+                    row, col = map(int, re.fullmatch(r"row_(\d+)_col_(\d+)", cell_scope).groups())
+                    if f"{fmt._column_name(col)}{row}" not in names:
+                        raise ValueError(f"Target {table_scope}.{cell_scope} does not exist")
+                for merge in table_options.get("merge_cells", []):
+                    if merge["start"] not in names or merge["end"] not in names:
+                        raise ValueError(f"Merge target in {table_scope} does not exist")
+
+
 def execute_format_request(format_request, fmt):
     if not format_request:
         return
@@ -1059,12 +1180,7 @@ def execute_format_request(format_request, fmt):
             continue
 
         if page_key in ["all_pages", "document", "entire_doc"]:
-            # 如果 AI 脑抽在 all_pages 里提到了 selection，优先处理选区
-            if "selection" in str(page_value).lower():
-                cursor = fmt.get_selection_cursor()
-            else:
-                cursor = fmt.get_document_cursor()
-            
+            cursor = fmt.get_document_cursor()
             apply_styles(fmt, cursor, page_value)
             continue
             
@@ -1091,7 +1207,7 @@ def execute_format_request(format_request, fmt):
                 apply_styles(fmt, cursor, line_style_dict=line_value)
 
         except Exception as e:
-            log_to_console(f"Error processing page {page_key}: {e}")
+            raise RuntimeError(f"Failed to format {page_key}") from e
             
             
 def apply_styles(fmt_instance, target_cursor, line_style_dict):
@@ -1164,7 +1280,23 @@ def apply_styles(fmt_instance, target_cursor, line_style_dict):
                     func(target_cursor, value)
                     
             except Exception as e:
-                log_to_console(f"Error executing {operation} on cursor: {e}")
+                raise RuntimeError(f"Failed to apply {operation}") from e
+
+
+def execute_undoable_format(format_request, fmt, undo_manager):
+    precheck_format_request(format_request, fmt)
+    previous_actions = tuple(undo_manager.getAllUndoActionTitles())
+    undo_manager.enterUndoContext("writer.ai formatting")
+    try:
+        execute_format_request(format_request, fmt)
+    except Exception:
+        undo_manager.leaveUndoContext()
+        current_actions = tuple(undo_manager.getAllUndoActionTitles())
+        if current_actions != previous_actions and current_actions[0] == "writer.ai formatting":
+            undo_manager.undo()
+        raise
+    else:
+        undo_manager.leaveUndoContext()
                 
                 
 class FormatRequestCallback(unohelper.Base, XCallback):
@@ -1177,6 +1309,60 @@ class FormatRequestCallback(unohelper.Base, XCallback):
 
     def notify(self, data):
         self.job._finish_format_request(self.target_doc, data, self.generation)
+
+
+class ConnectionTestCallback(unohelper.Base, XCallback):
+    def __init__(self, status_control):
+        self.status_control = status_control
+
+    def notify(self, data):
+        try:
+            self.status_control.getModel().Label = data
+        except Exception:
+            pass
+
+
+class ConnectionTestListener(unohelper.Base, XActionListener):
+    def __init__(self, job, controls):
+        self.job = job
+        self.controls = controls
+        self._callback = None
+        self._async_callback = None
+
+    def disposing(self, event):
+        pass
+
+    def actionPerformed(self, event):
+        settings = self.job._read_dialog_config(self.controls)
+        status = self.controls["connection_status"]
+        status.getModel().Label = "Testing connection..."
+        self._callback = ConnectionTestCallback(status)
+        self._async_callback = self.job.sm.createInstanceWithContext(
+            "com.sun.star.awt.AsyncCallback", self.job.ctx
+        )
+        callback = self._callback
+        async_callback = self._async_callback
+
+        def worker():
+            errors = []
+            try:
+                result = self.job.call_model(
+                    'Return JSON: {"all_pages":{"bold":true}}',
+                    settings.get("api_key", ""), settings.get("model", ""),
+                    settings.get("endpoint", ""), error_report=errors,
+                )
+            except Exception as error:
+                log_to_console(f"Connection test failed: {error}")
+                result = None
+            message = "Connection successful" if result else (
+                errors[0] if errors else "Connection test failed"
+            )
+            try:
+                async_callback.addCallback(callback, message)
+            except Exception as error:
+                log_to_console(f"Unable to display connection test result: {error}")
+
+        threading.Thread(target=worker, name="writer-ai-connection-test", daemon=True).start()
 
 
 class BackendItemListener(unohelper.Base, XItemListener):
@@ -1226,6 +1412,7 @@ class MainJob(unohelper.Base, XJobExecutor):
         self._status_indicator = None
         self._api_key_cache = ""
         self._request_timeout_timer = None
+        self._request_guard = None
 
         try:
             self.sm = ctx.getServiceManager()
@@ -1243,24 +1430,30 @@ class MainJob(unohelper.Base, XJobExecutor):
         if generation != self._request_generation:
             log_to_console("Ignoring cancelled or obsolete formatting response.")
             return
+        self._request_generation += 1
         self._request_in_progress = False
         self._request_callback = None
         self._async_callback = None
         if self._request_timeout_timer is not None:
             self._request_timeout_timer.cancel()
             self._request_timeout_timer = None
+        guard = self._request_guard
+        self._request_guard = None
         try:
             response = json.loads(result_json)
             if isinstance(response, dict) and "request" in response:
                 format_request = response.get("request", {})
                 validation_warnings = response.get("warnings", [])
                 request_errors = response.get("errors", [])
-                if response.get("timeout"):
-                    self._request_generation += 1
             else:
                 format_request = response
                 validation_warnings = []
                 request_errors = []
+            if validation_warnings:
+                format_request = {}
+                request_errors = [
+                    "The model returned unsupported formatting instructions; no changes were applied."
+                ] + validation_warnings[:5]
             if not format_request:
                 message = "Unable to complete the formatting request."
                 if request_errors:
@@ -1273,20 +1466,44 @@ class MainJob(unohelper.Base, XJobExecutor):
                 log_to_console("Formatting was not completed because the model returned no instructions.")
                 return
 
+            if guard is None or not guard.can_apply(format_request):
+                log_to_console("Formatting plan discarded because the document or selection changed.")
+                try:
+                    self._message_box(target_doc, "Writer.AI Document Changed",
+                                      "The document or selection changed while the request was running. Please submit the instruction again.").execute()
+                except Exception:
+                    pass
+                return
+
             fmt = Format(self.ctx, target_doc)
+            precheck_format_request(format_request, fmt)
+            if changes_document_content(format_request):
+                if not self._confirm_content_change(target_doc, format_request):
+                    log_to_console("Content-changing formatting plan declined by user.")
+                    return
+                if not guard.can_apply(format_request):
+                    log_to_console("Document changed while the plan was being confirmed.")
+                    return
             undo_manager = target_doc.getUndoManager()
-            undo_manager.enterUndoContext("writer.ai formatting")
-            try:
-                execute_format_request(format_request, fmt)
-            finally:
-                undo_manager.leaveUndoContext()
+            execute_undoable_format(format_request, fmt, undo_manager)
             log_to_console(
                 f"Formatting completed successfully: {count_format_operations(format_request)} operations."
             )
+            try:
+                self._show_result(target_doc, count_format_operations(format_request))
+            except Exception as display_error:
+                log_to_console(f"Unable to display formatting result: {display_error}")
         except Exception as e:
             log_to_console(f"Formatting failed after API response: {e}")
             traceback.print_exc(file=sys.stderr)
+            try:
+                self._message_box(target_doc, "Writer.AI Formatting Error",
+                                  "Formatting failed. The changes were rolled back where possible.").execute()
+            except Exception:
+                pass
         finally:
+            if guard is not None:
+                guard.close()
             self._end_status_indicator()
             _finish_queued_format_request()
 
@@ -1377,19 +1594,57 @@ class MainJob(unohelper.Base, XJobExecutor):
         toolkit = self.sm.createInstanceWithContext("com.sun.star.awt.Toolkit", self.ctx)
         return toolkit.createMessageBox(parent_window, "errorbox", BUTTONS_OK, title, message)
 
+    def _show_result(self, target_doc, planned_properties):
+        frame = target_doc.getCurrentController().getFrame()
+        parent_window = frame.getContainerWindow() if frame else None
+        toolkit = self.sm.createInstanceWithContext("com.sun.star.awt.Toolkit", self.ctx)
+        box = toolkit.createMessageBox(parent_window, "infobox", BUTTONS_OK,
+                                       "Writer.AI Completed",
+                                       f"Formatting completed. Plan contained {planned_properties} properties.")
+        box.execute()
+
+    def _confirm_content_change(self, target_doc, plan):
+        frame = target_doc.getCurrentController().getFrame()
+        parent_window = frame.getContainerWindow() if frame else None
+        toolkit = self.sm.createInstanceWithContext("com.sun.star.awt.Toolkit", self.ctx)
+        scopes = ", ".join(plan.keys())
+        message = (
+            f"The plan may change text or merge cells.\n"
+            f"Scopes: {scopes}\n"
+            f"Planned properties: {count_format_operations(plan)}\n\n"
+            "Apply these changes?"
+        )
+        box = toolkit.createMessageBox(parent_window, "querybox", BUTTONS_YES_NO,
+                                       "Writer.AI Confirm Changes", message)
+        return box.execute() == YES
+
     def _start_format_request(self, target_doc, query, api_key, model, endpoint):
+        guard = DocumentGuard(target_doc)
         with _FORMAT_REQUEST_QUEUE_LOCK:
             _FORMAT_REQUEST_QUEUE.append(
-                (self, target_doc, query, api_key, model, endpoint)
+                (self, target_doc, query, api_key, model, endpoint, guard)
             )
             queued = _FORMAT_REQUEST_ACTIVE or len(_FORMAT_REQUEST_QUEUE) > 1
         if queued:
             log_to_console("Formatting request queued; waiting for the previous request.")
         _run_next_format_request()
 
-    def _launch_format_request(self, target_doc, query, api_key, model, endpoint):
+    def _launch_format_request(self, target_doc, query, api_key, model, endpoint, guard):
         if self._request_in_progress:
             log_to_console("A formatting request is already running.")
+            guard.close()
+            _finish_queued_format_request()
+            return
+
+        if not guard.can_apply({}):
+            log_to_console("Queued formatting request skipped because the document changed.")
+            try:
+                self._message_box(target_doc, "Writer.AI Document Changed",
+                                  "The document changed before analysis began. Please submit the instruction again.").execute()
+            except Exception:
+                pass
+            guard.close()
+            _finish_queued_format_request()
             return
 
         async_callback = self.sm.createInstanceWithContext(
@@ -1401,6 +1656,7 @@ class MainJob(unohelper.Base, XJobExecutor):
         self._request_callback = callback
         self._async_callback = async_callback
         self._request_in_progress = True
+        self._request_guard = guard
         self._start_status_indicator(target_doc)
 
         def request_timeout():
@@ -1495,6 +1751,24 @@ class MainJob(unohelper.Base, XJobExecutor):
         ("Moonshot - Kimi K3", "kimi-k3", "https://api.moonshot.ai/v1"),
         ("Custom OpenAI-compatible API", "", ""),
     ]
+    BUILTIN_TEMPLATES = (
+        (
+            "Academic Paper",
+            "Format this document as a formal academic paper. Apply a clear title, "
+            "consistent headings, professional body text, and first-line indentation "
+            "for body paragraphs.",
+        ),
+        (
+            "Official Document",
+            "Format this document as a formal official document. Use a clear title, "
+            "consistent numbered headings, readable body text, and consistent paragraph spacing.",
+        ),
+        (
+            "Resume",
+            "Format this document as a professional resume. Create a clear title, "
+            "consistent section headings, compact body text, and clean alignment.",
+        ),
+    )
     
     @staticmethod
     def call_model(query, api_key, model, endpoint, validation_report=None, error_report=None):
@@ -1510,176 +1784,14 @@ class MainJob(unohelper.Base, XJobExecutor):
     Returns:
         dict: 结构化后的指令字典。若解析失败则返回空字典。
     """
-        # 1. 构造系统提示词，严格定义输出规范
-        system_prompt = ("""
-                            # Role
-                            You are a formatting expert specifically designed for LibreOffice Writer. Your mission is to translate natural language instructions from users into precise JSON formatting commands.
-
-                            # Output Format
-                            You MUST output ONLY the JSON format. Do not include any explanations. The structure is as follows:
-                            {
-                              "all_pages": { "Property": "Value" },  // For document-wide operations
-                              "page_n": {
-                                "line_all": { "Property": "Value" }, // For page-wide operations
-                                "line_n": { "Property": "Value" }    // For specific line operations
-                              }
-                            }
-
-                            # 1. Structural Range Protocol (MUTUALLY EXCLUSIVE)
-                            You MUST choose ONLY ONE of the following three structures. NEVER mix them.
-
-                            - [RULE A] GLOBAL ONLY: 
-                              If the user says "all", "entire doc", "everywhere".
-                              Format: {"all_pages": {"bold": true, ...}} 
-                              (STRICT: No "line_n" keys allowed inside)
-
-                            - [RULE B] PAGE-WIDE: 
-                              If the user says "all of page 1", "entire page 2".
-                              Format: {"page_1": {"line_all": {"bold": true, ...}}}
-
-                            - [RULE C] SPECIFIC LOCATION: 
-                              If the user says "first paragraph", "line 3", "page 1 line 1".
-                              Format: {"page_1": {"line_1": {"bold": true, ...}}}
-                              (STRICT: Even if it's the "first paragraph" of the whole doc, use "page_1" -> "line_1", NEVER "all_pages")
-
-                            # 2. Logic Priority
-                            - If a specific location (paragraph/line) is mentioned, RULE C overrides everything.
-                            - NEVER nest "line_n" or "line_all" under "all_pages".
-
-                            # 3. Property Assignment Logic (Strict Rules)
-
-                            ## A. Color Rules (font_color / highlight / underline)
-                            - Supports Hex strings (e.g., "FF5733").
-                            - Supports Semantic Colors: 
-                              - "warning" -> Red ("FF0000")
-                              - "Tiffany Blue" -> "0ABAB5"
-                              - "Sakura Pink" -> "FFB7C5"
-                              - "Success/Go" -> "008000"
-                              - "Sky Blue" -> "87CEEB"
-                              - "Gold" -> "FFD700"
-
-                            ## B. Font Names (font_name)
-                            - Use semantic tags: serif, sans-serif, monospace, code, formal, modern.
-                            - Chinese Fonts: Use "heiti" (Black-style), "songti" (Standard/Print), "kaiti" (Handwriting).
-                            - Specific Fonts: If mentioned (e.g., "Arial", "Consolas"), use the name directly.
-
-                            ## C. Underline Composite Construction
-                            - Format: The value of underline MUST follow the [StyleCode][HexColor] format.
-                            - CharUnderline style mapping: 
-                              {0:NONE, 1:SINGLE, 2:DOUBLE, 3:DOTTED, 5:DASH, 6:LONG_DASH, 7:DASH_DOT, 8:DASH_DOT_DOT, 9:SMALL_WAVE, 10:WAVE, 11:DOUBLE_WAVE, 12:BOLD, 13:BOLD_DOTTED, 14:BOLD_DASH, 15:BOLD_LONG_DASH, 16:BOLD_DASH_DOT, 17:BOLD_DASH_DOT_DOT, 18:BOLD_WAVE}
-                            - Assignment Logic:
-                              - Style Only: If the user only says "underline" or "wave underline" without a color, output only the Style Code (e.g., "1" or "10"). (Logic: Set CharUnderlineHasColor to False).
-                              - Color Only: If the user says "blue underline", output "10000FF" (1 is Single, 0000FF is Blue).
-                              - Style & Color: If the user says "red double underline", output "2FF0000" (2 is Double, FF0000 is Red).
-                            - Strict Atomic Interpretation: 
-                              Interpret the following as single underline types rather than font weight combinations:
-                              - bold wave underline = 18
-                              - bold dotted underline = 13
-                              - bold dash underline = 14
-                              - bold dash dot underline = 16
-                              *Do not split "bold" into font weight when it appears inside underline style names.*
-
-                            # 4. Property Names (MUST MATCH BACKEND)
-                            You may ONLY use these property keys:
-                            1. Styles: "bold" (bool), "italic" (bool), "underline" (str/bool), "clear_format" (true).
-                            2. Fonts: "font_name" (semantic/literal), "font_size" (number), "font_color" (Hex).
-                            3. Highlights: "highlight" (Hex or true for default), "remove_highlight" (true).
-                            4. Alignment: "align_center", "align_left", "align_right", "align_justify" (all bool).
-                            5. Paragraph styles: "title": true, "body": true, or "paragraph_style": "Title" / "Text Body".
-                            6. Tables: "tables": {"table_1": { ... }} or a top-level "table_1": { ... }.
-                            7. Paragraph indentation: "first_line_indent": number of Chinese character widths.
-                            8. Stable locations: "paragraph_1": { ... },
-                               "paragraph_text": {"text": "keyword", "format": { ... }},
-                               or "paragraphs": {"paragraph_1": { ... }, "contains": {"text": "keyword", "format": { ... }}}.
-                               These paragraph locations are independent of page layout.
-                               Table cells use "tables": {"table_1": {"cells": {"row_1_col_1": { ... }}}}.
-                            9. Document structure: use "structure" with optional "title", "heading_1",
-                               "heading_2", "heading_3", and "body" format objects. Set "infer": true only when
-                               the document lacks paragraph styles; the first non-empty paragraph is
-                               treated as the title. Numbered headings such as "1. Method" and
-                               "1.1 Data" map to heading_1 and heading_2.
-                               Table properties: "cell_background", "table_background", "header": true,
-                               "header_background", "header_bold", "repeat_header", "first_column_bold",
-                               "zebra", "zebra_background", "row_height", "border_color", "border_width",
-                               "column_widths" (percentage list summing to 100),
-                               "merge_cells" (list of {"start": "A1", "end": "B1"}),
-                               "auto_align" (true for automatic numeric/date alignment),
-                               "align" (left/right/center/justify), "font_name", "font_size", and "font_color",
-                               "caption"/"title" (table title text), "number" (table number), and
-                               "caption_prefix" (default "表"), "split" (allow table across pages),
-                               and "keep_together" (keep table with following content).
-
-                            # 5. Text Insertion & Spatial Localization Protocol
-                            If the user wants to add, insert, or format text, follow these STRICT structural rules:
-
-                            - **Structural Hierarchy Priority**: 
-                                1. If the user specifies a location (e.g., "second paragraph", "line 5", "page 1"), you MUST use the `page_n` -> `line_n` hierarchy. 
-                                2. DO NOT use "all_pages" unless the command explicitly applies to the entire document (e.g., "set whole doc font size to 12").
-                                3. Treat "paragraph" as synonymous with "line" (e.g., "second paragraph" maps to "line_2").
-
-                            - **Insertion Parameters**:
-                                - "insert_text": (string) The exact text content to be added.
-                                - "insert_before": (boolean) 
-                                    - `true`: Use for "before", "at the start of", "prefix", "in front of", "at the beginning".
-                                    - `false`: Use for "after", "at the end of", "append", "suffix", "behind". (Default)
-
-                            - **Example Mapping**:
-                                - User: "insert 'Hello' after the 2nd paragraph"
-                                - Target: {"page_1": {"line_2": {"insert_text": "Hello", "insert_before": false}}}
-                                
-                                - User: "bold the first line"
-                                - Target: {"page_1": {"line_1": {"bold": true}}}
-                                
-                            - **Text Replacement Protocol**:
-                            - If the user says "replace X with Y", "change line X to Y", or "overwrite":
-                            - Use "replace_text": "Y"
-                            - Hierarchy: Ensure it's inside the correct `page_n` -> `line_n`.
-
-                            # 6. Scope Selection Rules (CRITICAL)
-                            - **Selection Mode**: 
-                                - If the user mentions "selection", "selected part", "what I highlighted", or "this":
-                                - YOU MUST use "selection" as the top-level key. 
-                                - Example: {"selection": {"replace_text": "new text"}}
-                                
-                            - **Defaulting Rules**:
-                                - If the user says "replace" WITHOUT specifying a line number OR "selection":
-                                - DO NOT default to "line_1". 
-                                - Instead, ALWAYS use "selection" as the default scope. 
-                                - Logic: Users usually want to operate where their cursor is currently blinking.
-
-                            - **Strict All Pages**:
-                                - Only use "all_pages" if the user says "whole document", "everything", or "all".
-
-                            # 7. Operational Constraints
-                            - NO REDUNDANCY: Do not invent keys like "underline_color".
-                            - NO ASSUMPTIONS: Do not add a "highlight" if the user only asked for "underline".
-                            - COLOR PRIORITY: If a color is specified for a style (like underline), put that hex code directly into that property instead of adding a separate highlight.
-
-                            # 8. Examples
-                            - User: "Change entire doc to dark blue, font size 12"
-                              Assistant: {"all_pages": {"font_color": "00008B", "font_size": 12}}
-
-                            - User: "Bold everything on page 1 and use heiti font"
-                              Assistant: {"page_1": {"line_all": {"bold": true, "font_name": "heiti"}}}
-
-                            - User: "Set the highlight of page 2 line 4 to Sakura Pink"
-                              Assistant: {"page_2": {"line_4": {"highlight": "FFB7C5"}}}
-
-                            - User: "Format the first table with a gray header and centered cells"
-                              Assistant: {"tables": {"table_1": {"header": true, "header_background": "D9E2F3", "align": "center"}}}
-
-                  """
-
-        )
-
-        # Keep the production prompt compact so model requests start faster.
-        # The returned JSON is still checked by validate_format_request below.
         system_prompt = """
 You are Writer.AI, a LibreOffice Writer formatting assistant. Return ONLY one
 JSON object in the exact format below. Do not return a generic {"scope": ...,
-"properties": ...} object. For example, "bold the first line" must be
-{"paragraph_1":{"bold":true}}, and "highlight the first line" must be
-{"paragraph_1":{"highlight":true}}. Valid scopes: selection, all_pages, paragraph_N, paragraph_text,
+"properties": ...} object. For example, "bold the first paragraph" is
+{"paragraph_1":{"bold":true}}, and "highlight the first paragraph" is
+{"paragraph_1":{"highlight":true}}. A paragraph is not a visual line.
+Use paragraph_N for a numbered paragraph; use page_N.line_N only when the user
+explicitly refers to a visual page and line. Valid scopes: selection, all_pages, paragraph_N, paragraph_text,
 paragraphs, structure, page_N, tables, and table_N. Valid properties include
 bold, italic, underline, font_size, font_color, font_name, highlight,
 remove_highlight, align_center, align_left, align_right, align_justify, title,
@@ -1689,23 +1801,31 @@ table_background, header_bold, align, repeat_header, first_column_bold, zebra,
 zebra_background, row_height, border_color, border_width, column_widths,
 merge_cells, auto_align, caption, number, caption_prefix, split, and
 keep_together. Use paragraph_N or paragraph_text for stable paragraph targets.
+Use paragraph_text only for a distinctive phrase; repeated matches are rejected
+by the executor, so prefer paragraph_N when the user gives an ordinal.
 Use tables.table_N.cells.row_N_col_N for table cells. Use structure with title,
 heading_1, heading_2, heading_3, and body for document roles. Values must match
 their property meaning. Never include explanations or Markdown.
 """
         if not api_key:
             api_key = os.environ.get("WRITER_AI_API_KEY", "")
-        if not api_key or not model or not endpoint:
-            log_to_console("API key, model, and endpoint must be configured.")
+        parsed_endpoint = urlparse(endpoint)
+        host = (parsed_endpoint.hostname or "").lower()
+        local_endpoint = host in {"localhost", "127.0.0.1", "::1"}
+        if (not model or not endpoint or not host or
+                parsed_endpoint.scheme not in {"http", "https"} or
+                (parsed_endpoint.scheme != "https" and not local_endpoint) or
+                (not api_key and not local_endpoint)):
+            log_to_console("A valid HTTPS endpoint, model, and API key are required for remote providers.")
             if error_report is not None:
-                error_report.append("Enter an API key, model, and endpoint in Settings first.")
+                error_report.append("Check the model, endpoint, and API key in Settings. Remote endpoints must use HTTPS; local endpoints may omit the key.")
             return {}
 
         endpoint = endpoint.rstrip("/")
         if not endpoint.endswith("/chat/completions"):
             endpoint += "/chat/completions"
 
-        payload = json.dumps({
+        request_body = {
             "model": model,
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -1713,14 +1833,20 @@ their property meaning. Never include explanations or Markdown.
             ],
             "stream": False,
             "max_completion_tokens": 512,
-        }).encode("utf-8")
+        }
+        if model.lower().startswith("qwen") and (
+            host == "dashscope.aliyuncs.com" or host == "dashscope-intl.aliyuncs.com"
+            or host.endswith(".maas.aliyuncs.com")
+        ):
+            request_body["response_format"] = {"type": "json_object"}
+        payload = json.dumps(request_body).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if api_key and not local_endpoint:
+            headers["Authorization"] = f"Bearer {api_key}"
         request = Request(
             endpoint,
             data=payload,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
             method="POST",
         )
 
@@ -1729,16 +1855,10 @@ their property meaning. Never include explanations or Markdown.
                 response_data = json.loads(response.read().decode("utf-8"))
             content = response_data["choices"][0]["message"]["content"]
             try:
-                # 1. 清理字符串
-                clean_json = content.replace("```json", "").replace("```", "").strip()
-                
-                # 2. 只解析一次并存储在变量中
-                data = validate_format_request(json.loads(clean_json), validation_report)
-                
-                # 3. 打印并返回
+                data = validate_format_request(parse_model_json(content), validation_report)
                 log_to_console(f"Structured query: {data}")
                 return data
-            except Exception as e:
+            except (ValueError, TypeError) as e:
                 log_to_console(f"JSON Parsing Error: {e}")
                 if error_report is not None:
                     error_report.append("The model returned an unreadable formatting plan. Please try again.")
@@ -1798,6 +1918,82 @@ their property meaning. Never include explanations or Markdown.
             self.set_config(key, value)
         log_to_console("Settings saved.")
 
+    def _custom_templates(self):
+        templates = self.get_config("templates", [])
+        if not isinstance(templates, list):
+            return []
+        return [
+            (item["name"], item["instruction"])
+            for item in templates
+            if isinstance(item, dict)
+            and isinstance(item.get("name"), str)
+            and item["name"].strip()
+            and isinstance(item.get("instruction"), str)
+            and item["instruction"].strip()
+        ]
+
+    def _all_templates(self):
+        return list(self.BUILTIN_TEMPLATES) + self._custom_templates()
+
+    def _save_template(self, name, instruction):
+        name = str(name).strip()
+        instruction = str(instruction).strip()
+        if not name or not instruction:
+            return
+        templates = [
+            {"name": item_name, "instruction": item_instruction}
+            for item_name, item_instruction in self._custom_templates()
+            if item_name.lower() != name.lower()
+        ]
+        templates.append({"name": name, "instruction": instruction})
+        self.set_config("templates", templates)
+        log_to_console(f"Template saved: {name}")
+
+    def templates_box(self, title="Templates"):
+        templates = self._all_templates()
+        if not templates:
+            return None
+        dialog = self.sm.createInstanceWithContext("com.sun.star.awt.UnoControlDialog", self.ctx)
+        model = self.sm.createInstanceWithContext("com.sun.star.awt.UnoControlDialogModel", self.ctx)
+        dialog.setModel(model)
+        dialog.setTitle(title)
+        dialog.setPosSize(0, 0, 520, 220, SIZE)
+
+        list_model = model.createInstance("com.sun.star.awt.UnoControlListBoxModel")
+        model.insertByName("templates", list_model)
+        list_model.StringItemList = tuple(item[0] for item in templates)
+        list_model.SelectedItems = (0,)
+        list_model.MultiSelection = False
+        list_control = dialog.getControl("templates")
+        list_control.setPosSize(10, 10, 500, 150, POSSIZE)
+
+        apply_model = model.createInstance("com.sun.star.awt.UnoControlButtonModel")
+        model.insertByName("apply", apply_model)
+        apply_model.Label = "Apply Template"
+        apply_model.PushButtonType = OK
+        apply_control = dialog.getControl("apply")
+        apply_control.setPosSize(130, 175, 125, 26, POSSIZE)
+
+        cancel_model = model.createInstance("com.sun.star.awt.UnoControlButtonModel")
+        model.insertByName("cancel", cancel_model)
+        cancel_model.Label = "Cancel"
+        cancel_model.PushButtonType = CANCEL
+        cancel_control = dialog.getControl("cancel")
+        cancel_control.setPosSize(265, 175, 125, 26, POSSIZE)
+
+        frame = self.desktop.getCurrentFrame()
+        window = frame.getContainerWindow() if frame else None
+        dialog.createPeer(self.sm.createInstanceWithContext("com.sun.star.awt.Toolkit", self.ctx), window)
+        try:
+            if not dialog.execute():
+                return None
+            selected = list_model.SelectedItems
+            if not selected or not 0 <= selected[0] < len(templates):
+                return None
+            return templates[selected[0]][1]
+        finally:
+            dialog.dispose()
+
 
     def settings_box(self, title="", x=None, y=None):
         log_to_console("--- Starting settings_box ---")
@@ -1846,7 +2042,7 @@ their property meaning. Never include explanations or Markdown.
             y_pos += EDIT_HEIGHT + VERT_SEP
             add("label_api_key", "FixedText", HORI_MARGIN, y_pos + 4, LABEL_WIDTH, LABEL_HEIGHT, {"Label": "API Key:"})
             controls["api_key"] = add("edit_api_key", "Edit", HORI_MARGIN + LABEL_WIDTH, y_pos,
-                edit_width, EDIT_HEIGHT, {"Text": self.get_api_key()})
+                edit_width, EDIT_HEIGHT, {"Text": self.get_api_key(), "EchoChar": ord("*")})
 
             y_pos += EDIT_HEIGHT + VERT_SEP
             preset = self.BACKEND_PRESETS[current_backend_idx]
@@ -1873,15 +2069,23 @@ their property meaning. Never include explanations or Markdown.
             )
             controls["backend"].addItemListener(controls["backend_listener"])
 
+            controls["connection_status"] = add(
+                "connection_status", "FixedText", HORI_MARGIN, HEIGHT - 78,
+                WIDTH - HORI_MARGIN * 2, LABEL_HEIGHT, {"Label": ""}
+            )
             y_pos = HEIGHT - BUTTON_HEIGHT - VERT_MARGIN
-            button_start_x = (WIDTH - (BUTTON_WIDTH * 2 + HORI_SEP)) / 2
-            add("btn_ok", "Button", button_start_x, y_pos, BUTTON_WIDTH, BUTTON_HEIGHT, {
+            button_start_x = (WIDTH - (BUTTON_WIDTH * 3 + HORI_SEP * 2)) / 2
+            test_button = add("btn_test", "Button", button_start_x, y_pos,
+                              BUTTON_WIDTH, BUTTON_HEIGHT, {"Label": "Test Connection"})
+            controls["test_listener"] = ConnectionTestListener(self, controls)
+            test_button.addActionListener(controls["test_listener"])
+            add("btn_ok", "Button", button_start_x + BUTTON_WIDTH + HORI_SEP, y_pos, BUTTON_WIDTH, BUTTON_HEIGHT, {
                 "PushButtonType": OK,
                 "DefaultButton": True,
                 "Label": "Save Settings",
                 "HelpText": "Save the API key, model, and provider settings.",
             })
-            add("btn_cancel", "Button", button_start_x + BUTTON_WIDTH + HORI_SEP, y_pos, BUTTON_WIDTH, BUTTON_HEIGHT, {
+            add("btn_cancel", "Button", button_start_x + BUTTON_WIDTH * 2 + HORI_SEP * 2, y_pos, BUTTON_WIDTH, BUTTON_HEIGHT, {
                 "PushButtonType": CANCEL,
                 "Label": "Cancel",
                 "HelpText": "Close without changing saved settings.",
@@ -1934,9 +2138,6 @@ their property meaning. Never include explanations or Markdown.
 
         HEIGHT = VERT_MARGIN * 3 + LABEL_HEIGHT + VERT_SEP + EDIT_HEIGHT + BUTTON_HEIGHT
 
-        from com.sun.star.awt.PosSize import POS, SIZE, POSSIZE
-        from com.sun.star.awt.PushButtonType import OK, CANCEL
-        
         ctx = self.ctx
         def create(name):
             return ctx.getServiceManager().createInstanceWithContext(name, ctx)
@@ -1983,9 +2184,6 @@ their property meaning. Never include explanations or Markdown.
 
 
     def trigger(self, args):
-        BUTTONS_YES_NO = uno.getConstantByName("com.sun.star.awt.MessageBoxButtons.BUTTONS_YES_NO")
-        YES = uno.getConstantByName("com.sun.star.awt.MessageBoxResults.YES")
-        
         log_to_console(f"\n--- Trigger called with args: {args} ---")
 
         if args == "setting":
@@ -2041,9 +2239,8 @@ their property meaning. Never include explanations or Markdown.
 
                 # 4. Get User Input for AI
                 user_input = self.input_box(
-                    "Document Format:",
+                    "Document Format (e.g. Bold all headings):",
                     "AI Formatter",
-                    "Example: Bold all headings or highlight keywords."
                 )
 
                 if not user_input:

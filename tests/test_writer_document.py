@@ -1,10 +1,12 @@
 import os
 import shutil
+import socket
 import subprocess
 import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 import uno
 
@@ -15,10 +17,16 @@ class WriterDocumentTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.profile = tempfile.mkdtemp(prefix="writer-ai-lo-")
-        cls.port = 2083
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            cls.port = listener.getsockname()[1]
         profile_url = uno.systemPathToFileUrl(cls.profile)
         cls.process = subprocess.Popen([
-            "/opt/libreoffice26.2/program/soffice",
+            os.environ.get("WRITER_AI_SOFFICE") or (
+                "/opt/libreoffice26.2/program/soffice"
+                if os.path.exists("/opt/libreoffice26.2/program/soffice")
+                else shutil.which("soffice")
+            ),
             "--headless",
             "--nologo",
             "--nofirststartwizard",
@@ -82,6 +90,23 @@ class WriterDocumentTests(unittest.TestCase):
         self.assertEqual(paragraphs[0].ParaStyleName, "Title")
         self.assertIn(paragraphs[1].ParaStyleName, {"Text Body", "Standard"})
         self.assertGreater(paragraphs[1].ParaFirstLineIndent, 0)
+
+    def test_alignment_keeps_full_document_range_for_following_styles(self):
+        cursor = self.doc.Text.createTextCursor()
+        for index, value in enumerate(("First", "Second", "Third")):
+            if index:
+                self.doc.Text.insertControlCharacter(
+                    cursor, uno.getConstantByName("com.sun.star.text.ControlCharacter.PARAGRAPH_BREAK"), False
+                )
+            self.doc.Text.insertString(cursor, value, False)
+
+        main.execute_undoable_format(
+            {"all_pages": {"align_center": True, "bold": True}},
+            self.formatter, self.doc.getUndoManager(),
+        )
+        for paragraph in self.formatter._paragraphs():
+            self.assertEqual(int(paragraph.ParaAdjust), 3)
+            self.assertEqual(paragraph.CharWeight, main.BOLD)
 
     def test_numbered_heading_inference(self):
         cursor = self.doc.Text.createTextCursor()
@@ -169,6 +194,50 @@ class WriterDocumentTests(unittest.TestCase):
 
     def test_selection_formatting_requires_selected_text(self):
         self.assertIsNone(self.formatter.get_selection_cursor())
+
+    def test_failed_formatting_restores_document(self):
+        self.doc.Text.String = "Before"
+
+        def fail_after_change(request, formatter):
+            formatter.doc.Text.String = "Changed"
+            raise RuntimeError("formatting failed")
+
+        with patch.object(main, "execute_format_request", fail_after_change):
+            with self.assertRaisesRegex(RuntimeError, "formatting failed"):
+                main.execute_undoable_format({}, self.formatter, self.doc.getUndoManager())
+        self.assertEqual(self.doc.Text.String, "Before")
+
+    def test_document_guard_detects_edits_and_selection_changes(self):
+        self.doc.Text.String = "First paragraph"
+        view = self.doc.getCurrentController().getViewCursor()
+        view.gotoStart(False)
+        view.goRight(5, True)
+        guard = main.DocumentGuard(self.doc)
+        try:
+            self.assertTrue(guard.can_apply({"selection": {"bold": True}}))
+            view.gotoEnd(False)
+            self.assertFalse(guard.can_apply({"selection": {"bold": True}}))
+            self.assertTrue(guard.can_apply({"all_pages": {"bold": True}}))
+            cursor = self.doc.Text.createTextCursor()
+            cursor.gotoEnd(True)
+            cursor.CharWeight = main.BOLD
+            self.assertFalse(guard.can_apply({"all_pages": {"bold": True}}))
+        finally:
+            guard.close()
+
+    def test_ambiguous_paragraph_text_is_rejected_before_edit(self):
+        cursor = self.doc.Text.createTextCursor()
+        self.doc.Text.insertString(cursor, "Same", False)
+        self.doc.Text.insertControlCharacter(
+            cursor, uno.getConstantByName("com.sun.star.text.ControlCharacter.PARAGRAPH_BREAK"), False
+        )
+        self.doc.Text.insertString(cursor, "Same", False)
+        original = self.doc.Text.String
+        plan = {"all_pages": {"bold": True},
+                "paragraph_text": {"text": "Same", "format": {"italic": True}}}
+        with self.assertRaisesRegex(ValueError, "exactly one paragraph"):
+            main.execute_undoable_format(plan, self.formatter, self.doc.getUndoManager())
+        self.assertEqual(self.doc.Text.String, original)
 
     def test_async_callback_returns_to_writer(self):
         received = []

@@ -31,6 +31,28 @@
               <value>_self</value>
             </prop>
           </node>
+          <node oor:name="M3" oor:op="replace">
+            <prop oor:name="Title">
+              <value xml:lang="en-US">Templates</value>
+            </prop>
+            <prop oor:name="URL">
+              <value>service:org.extension.writerai.do?templates</value>
+            </prop>
+            <prop oor:name="Target" oor:type="xs:string">
+              <value>_self</value>
+            </prop>
+          </node>
+          <node oor:name="M4" oor:op="replace">
+            <prop oor:name="Title">
+              <value xml:lang="en-US">Save Template</value>
+            </prop>
+            <prop oor:name="URL">
+              <value>service:org.extension.writerai.do?save_template</value>
+            </prop>
+            <prop oor:name="Target" oor:type="xs:string">
+              <value>_self</value>
+            </prop>
+          </node>
         </node>
       </node>
     </node>

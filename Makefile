@@ -1,6 +1,9 @@
+PYTHON ?= $(if $(wildcard /opt/libreoffice26.2/program/python),/opt/libreoffice26.2/program/python,/usr/bin/python3)
+UNOPKG ?= $(if $(wildcard /opt/libreoffice26.2/program/unopkg),/opt/libreoffice26.2/program/unopkg,unopkg)
+
 all:
 	./build.sh
-	/opt/libreoffice26.2/program/unopkg add -f writer.ai.oxt
+	$(UNOPKG) add -f writer.ai.oxt
 
 test:
-	/opt/libreoffice26.2/program/python -m unittest discover -s tests -p 'test_*.py'
+	$(PYTHON) -m unittest discover -s tests -p 'test_*.py'

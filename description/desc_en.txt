@@ -1,3 +1,4 @@
 Writer.AI is an AI-assisted formatting extension for LibreOffice Writer.
 It converts natural-language instructions into validated formatting plans for
-paragraphs, headings, and tables, with preview, cancellation, and undo support.
+paragraphs, headings, and tables. Changes are grouped into one undo action;
+content changes require confirmation.

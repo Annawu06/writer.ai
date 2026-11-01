@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Reject stale AI plans if the document changes while a request is pending;
+  selection instructions also require the original selection.
+- Check paragraph and table targets before editing, and reject ambiguous
+  paragraph text matches.
+- Reject the entire model plan when validation drops invalid instructions.
+- Clarify that numbered paragraphs and visual page lines are different targets.
+- Add guarded JSON parsing, Qwen JSON mode, a connection test, failure recovery
+  tests, and automated OXT builds.
+- Preserve multi-paragraph ranges while setting alignment; remove the
+  document/selection substring heuristic and input example prefill.
+- Confirm content-changing plans, allow keyless loopback providers, require
+  HTTPS for remote providers, and refresh extension descriptions and test setup.
+
 ## 1.1.2 - 2026-09-04
 
 - Queue consecutive formatting requests and apply them in submission order.
