@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Move plan parsing and validation into a module that can be tested without UNO.
+- Compare supported paragraph properties with requested values in the plan preview.
+- Compare selected text and table pagination and cell backgrounds in the preview.
+- Warn before adding a table caption because it changes document content.
+- Remove layout-dependent page/line targeting, which could select the wrong text.
+- Report processed target groups and surface text-write failures for rollback.
+- Exclude target metadata from planned property counts and count structure style changes.
+- Reject conflicting alignment or paragraph style commands for the same target.
+- Reject plans that reference a paragraph style unavailable in the current document.
+- Show estimated target ranges and the complete validated formatting plan for approval before changing a document.
+- Prompt the model to preserve document text unless content changes are explicitly requested.
+- Add a reproducible first-use example to both READMEs.
+
 ## 1.2.0 - 2026-11-01
 
 - Reject stale AI plans if the document changes while a request is pending;

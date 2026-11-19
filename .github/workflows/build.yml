@@ -14,7 +14,7 @@ jobs:
       - name: Install LibreOffice and UNO Python bindings
         run: sudo apt-get update && sudo apt-get install -y libreoffice-writer python3-uno zip
       - name: Run tests
-        run: /usr/bin/python3 -m unittest discover -s tests -p 'test_*.py'
+        run: PYTHONPATH=pythonpath /usr/bin/python3 -m unittest discover -s tests -p 'test_*.py'
       - name: Build OXT
         run: ./build.sh
       - name: Upload package

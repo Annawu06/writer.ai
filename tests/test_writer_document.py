@@ -108,6 +108,40 @@ class WriterDocumentTests(unittest.TestCase):
             self.assertEqual(int(paragraph.ParaAdjust), 3)
             self.assertEqual(paragraph.CharWeight, main.BOLD)
 
+    def test_execution_report_lists_processed_targets(self):
+        cursor = self.doc.Text.createTextCursor()
+        self.doc.Text.insertString(cursor, "First", False)
+        self.doc.Text.insertControlCharacter(
+            cursor, uno.getConstantByName("com.sun.star.text.ControlCharacter.PARAGRAPH_BREAK"), False
+        )
+        self.doc.Text.insertString(cursor, "Second", False)
+        report = main.execute_undoable_format({
+            "paragraph_1": {"bold": True},
+            "paragraph_2": {"italic": True},
+        }, self.formatter, self.doc.getUndoManager())
+        self.assertEqual(report, {
+            "processed": ["paragraph_1", "paragraph_2"], "skipped": [],
+        })
+
+    def test_execution_report_marks_unmatched_structure(self):
+        self.doc.Text.String = "Plain paragraph."
+        report = main.execute_undoable_format({
+            "structure": {"heading_1": {"bold": True}}
+        }, self.formatter, self.doc.getUndoManager())
+        self.assertEqual(report["processed"], [])
+        self.assertEqual(report["skipped"], ["structure (no matching paragraphs)"])
+
+    def test_unsupported_scope_rolls_back_earlier_formatting(self):
+        self.doc.Text.String = "Keep original formatting"
+        paragraph = next(self.formatter._paragraphs())
+        original_weight = paragraph.CharWeight
+        with self.assertRaisesRegex(ValueError, "Unsupported formatting scope"):
+            main.execute_undoable_format({
+                "all_pages": {"bold": True},
+                "page_1": {"line_1": {"italic": True}},
+            }, self.formatter, self.doc.getUndoManager())
+        self.assertEqual(next(self.formatter._paragraphs()).CharWeight, original_weight)
+
     def test_numbered_heading_inference(self):
         cursor = self.doc.Text.createTextCursor()
         for index, text in enumerate(("论文标题", "1. 方法", "1.1 数据处理", "这是正文。")):
@@ -129,6 +163,78 @@ class WriterDocumentTests(unittest.TestCase):
         paragraphs = list(self.formatter._paragraphs())
         self.assertEqual(paragraphs[1].ParaStyleName, "Heading 1")
         self.assertEqual(paragraphs[2].ParaStyleName, "Heading 2")
+
+    def test_preview_reports_structure_targets_without_editing(self):
+        cursor = self.doc.Text.createTextCursor()
+        for index, value in enumerate(("论文标题", "1. 方法", "1.1 数据处理", "这是正文。")):
+            if index:
+                self.doc.Text.insertControlCharacter(
+                    cursor,
+                    uno.getConstantByName("com.sun.star.text.ControlCharacter.PARAGRAPH_BREAK"),
+                    False,
+                )
+            self.doc.Text.insertString(cursor, value, False)
+        before = self.doc.Text.String
+        targets = main.describe_plan_targets({"structure": {
+            "infer": True, "title": True, "heading_1": True,
+            "heading_2": True, "body": True,
+        }}, self.formatter)
+        self.assertIn("structure.title: 1 paragraph", targets)
+        self.assertIn("structure.heading_1: 1 paragraph", targets)
+        self.assertIn("structure.heading_2: 1 paragraph", targets)
+        self.assertIn("structure.body: 1 paragraph", targets)
+        self.assertEqual(self.doc.Text.String, before)
+
+    def test_preview_shows_paragraph_property_differences_without_editing(self):
+        self.doc.Text.String = "Example paragraph"
+        paragraph = next(self.formatter._paragraphs())
+        original_style = paragraph.ParaStyleName
+        original_alignment = paragraph.ParaAdjust
+        original_weight = paragraph.CharWeight
+        differences = main.describe_plan_differences({
+            "paragraph_1": {
+                "title": True, "bold": True, "align_center": True,
+                "first_line_indent": 2,
+            }
+        }, self.formatter)
+        self.assertEqual(len(differences), 1)
+        self.assertIn("style:", differences[0])
+        self.assertIn("→ Title", differences[0])
+        self.assertIn("bold:", differences[0])
+        self.assertIn("alignment:", differences[0])
+        self.assertIn("first-line indent:", differences[0])
+        self.assertEqual(paragraph.ParaStyleName, original_style)
+        self.assertEqual(paragraph.ParaAdjust, original_alignment)
+        self.assertEqual(paragraph.CharWeight, original_weight)
+
+    def test_preview_shows_selection_and_table_differences_without_editing(self):
+        self.doc.Text.String = "Selected text"
+        view = self.doc.getCurrentController().getViewCursor()
+        view.gotoStart(False)
+        view.goRight(8, True)
+        selected_before = self.doc.Text.String
+        selection_diffs = main.describe_plan_differences({
+            "selection": {"bold": True}
+        }, self.formatter)
+        self.assertIn("selection:", "\n".join(selection_diffs))
+        self.assertEqual(self.doc.Text.String, selected_before)
+
+        table = self.doc.createInstance("com.sun.star.text.TextTable")
+        table.initialize(2, 2)
+        cursor = self.doc.Text.createTextCursor()
+        cursor.gotoEnd(False)
+        self.doc.Text.insertTextContent(cursor, table, False)
+        before_split = table.Split
+        before_background = table.getCellByName("A1").BackColor
+        table_diffs = main.describe_plan_differences({
+            "tables": {"table_1": {
+                "split": not before_split, "table_background": "#112233",
+            }}
+        }, self.formatter)
+        self.assertIn("split:", "\n".join(table_diffs))
+        self.assertIn("A1 background:", "\n".join(table_diffs))
+        self.assertEqual(table.Split, before_split)
+        self.assertEqual(table.getCellByName("A1").BackColor, before_background)
 
     def test_table_formatting(self):
         table = self.doc.createInstance("com.sun.star.text.TextTable")
@@ -237,6 +343,15 @@ class WriterDocumentTests(unittest.TestCase):
                 "paragraph_text": {"text": "Same", "format": {"italic": True}}}
         with self.assertRaisesRegex(ValueError, "exactly one paragraph"):
             main.execute_undoable_format(plan, self.formatter, self.doc.getUndoManager())
+        self.assertEqual(self.doc.Text.String, original)
+
+    def test_missing_paragraph_style_is_rejected_before_edit(self):
+        self.doc.Text.String = "Example"
+        original = self.doc.Text.String
+        with self.assertRaisesRegex(ValueError, "Paragraph style does not exist"):
+            main.execute_undoable_format({
+                "paragraph_1": {"paragraph_style": "A Missing Style"}
+            }, self.formatter, self.doc.getUndoManager())
         self.assertEqual(self.doc.Text.String, original)
 
     def test_async_callback_returns_to_writer(self):

@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import ANY, patch
 
 import main
+import format_plan
 
 
 class FakeResponse:
@@ -22,20 +23,20 @@ class FakeResponse:
 class MainLogicTests(unittest.TestCase):
     def test_extracts_fenced_json_and_repairs_trailing_comma(self):
         content = 'Done:\n```json\n{"all_pages":{"insert_text":"a,}","bold":true,},}\n```'
-        self.assertEqual(main.parse_model_json(content), {
+        self.assertEqual(format_plan.parse_model_json(content), {
             "all_pages": {"insert_text": "a,}", "bold": True}
         })
 
     def test_rejects_invalid_numeric_and_color_values(self):
         report = []
-        self.assertEqual(main.validate_format_request({
+        self.assertEqual(format_plan.validate_format_request({
             "all_pages": {"font_size": 0, "font_color": "invalid", "bold": True},
             "tables": {"table_1": {"column_widths": [float("nan"), 50]}},
         }, report), {"all_pages": {"bold": True}})
         self.assertEqual(len(report), 3)
 
     def test_table_caption_title_and_invalid_merge_cells(self):
-        self.assertEqual(main.validate_format_request({
+        self.assertEqual(format_plan.validate_format_request({
             "tables": {"table_1": {
                 "title": "Results", "merge_cells": [{"start": 4, "end": "B1"}],
             }}
@@ -43,7 +44,7 @@ class MainLogicTests(unittest.TestCase):
 
     def test_invalid_nested_structure_is_reported(self):
         warnings = []
-        self.assertEqual(main.validate_format_request({
+        self.assertEqual(format_plan.validate_format_request({
             "paragraph_text": {"format": {"bold": True}}
         }, warnings), {})
         self.assertTrue(warnings)
@@ -78,6 +79,35 @@ class MainLogicTests(unittest.TestCase):
         execute.assert_not_called()
         self.assertTrue(job._request_guard is None)
 
+    def test_declined_preview_leaves_document_unchanged(self):
+        class Guard:
+            closed = False
+
+            def can_apply(self, plan):
+                return True
+
+            def close(self):
+                self.closed = True
+
+        job = object.__new__(main.MainJob)
+        job.ctx = object()
+        job._request_generation = 1
+        job._request_in_progress = True
+        job._request_callback = None
+        job._async_callback = None
+        job._request_timeout_timer = None
+        job._request_guard = Guard()
+        job._status_indicator = None
+        job._preview_format_plan = lambda doc, plan, fmt: False
+        response = json.dumps({"request": {"all_pages": {"bold": True}}, "warnings": [], "errors": []})
+
+        with patch.object(main, "Format"), patch.object(main, "precheck_format_request"), \
+                patch.object(main, "execute_undoable_format") as execute:
+            job._finish_format_request(object(), response, 1)
+
+        execute.assert_not_called()
+        self.assertTrue(job._request_guard is None)
+
     def test_document_scope_does_not_switch_to_selection_for_text_values(self):
         class Formatter:
             def get_document_cursor(self):
@@ -92,13 +122,28 @@ class MainLogicTests(unittest.TestCase):
         apply.assert_called_once_with(ANY, "document", plan["all_pages"])
 
     def test_content_changes_require_confirmation(self):
-        self.assertFalse(main.changes_document_content({"all_pages": {"bold": True}}))
-        self.assertTrue(main.changes_document_content({"paragraphs": {
+        self.assertFalse(format_plan.changes_document_content({"all_pages": {"bold": True}}))
+        self.assertTrue(format_plan.changes_document_content({"paragraphs": {
             "contains": {"text": "old", "format": {"replace_text": "new"}}
         }}))
-        self.assertTrue(main.changes_document_content({"tables": {
+        self.assertTrue(format_plan.changes_document_content({"tables": {
             "table_1": {"merge_cells": [{"start": "A1", "end": "B1"}]}
         }}))
+
+    def test_text_write_errors_are_not_silently_ignored(self):
+        formatter = object.__new__(main.Format)
+
+        class BrokenCursor:
+            def getText(self):
+                raise RuntimeError("UNO insert failure")
+
+            def setString(self, text):
+                raise RuntimeError("UNO replace failure")
+
+        with self.assertRaisesRegex(RuntimeError, "Unable to insert text"):
+            formatter.insert_text_at_cursor(BrokenCursor(), "new")
+        with self.assertRaisesRegex(RuntimeError, "Unable to replace text"):
+            formatter.replace_selection(BrokenCursor(), "new")
 
     def test_undoable_format_rolls_back_partial_failure(self):
         class UndoManager:
@@ -151,7 +196,7 @@ class MainLogicTests(unittest.TestCase):
             "unknown_scope": {"bold": True},
         }
         self.assertEqual(
-            main.validate_format_request(request),
+            format_plan.validate_format_request(request),
             {
                 "paragraph_2": {"first_line_indent": 2},
                 "paragraph_text": {

@@ -1,8 +1,27 @@
 # Writer.AI
 
 Writer.AI is an AI-assisted formatting extension for LibreOffice Writer. It
-converts natural-language instructions into a validated formatting plan and
-applies changes as one undoable operation.
+converts natural-language instructions into a validated formatting plan,
+previews the plan, and applies approved changes as one undoable operation.
+
+## Try it in one minute
+
+Enter two paragraphs in Writer:
+
+```text
+Experiment report
+This experiment compares two methods.
+```
+
+Open **Writer.AI > AI Formatter** and enter:
+
+```text
+Make the first paragraph a title. Make the second paragraph body text with a two-character first-line indent.
+```
+
+Review the estimated target counts, comparable paragraph property changes, and complete JSON plan, then click **Apply**. The first paragraph
+gets Writer's Title style; the second gets a body style and first-line indent.
+The words stay the same. This example works in a new document without a template.
 
 ## Features
 
@@ -12,12 +31,13 @@ applies changes as one undoable operation.
 - Format table headers, backgrounds, borders, fonts, alignment, row height, and column widths.
 - Support zebra rows, automatic numeric/date alignment, first-column emphasis, cell merging, and numbered captions.
 - Control table pagination with repeated headers, table splitting, and keep-together behavior.
-- Apply validated formatting plans automatically, undo the complete operation,
-  and use a 30-second timeout.
+- Preview estimated target ranges, paragraph property changes, and validated formatting plans before applying them, undo the complete
+  operation, and use a 30-second timeout.
 - Recover JSON plans from fenced or prose-wrapped replies, validate numeric
   ranges, and roll back changes if a formatting command fails.
 - Request JSON output mode for Qwen models on DashScope.
-- Confirm plans that insert or replace text or merge cells.
+- Instruct the model to preserve text by default, and flag plans that insert or
+  replace text or merge cells in the preview.
 - Use a loopback OpenAI-compatible endpoint without an API key; remote endpoints
   require HTTPS and an API key.
 - Work with Kimi K3 and other OpenAI-compatible API providers.
@@ -53,8 +73,8 @@ configuration for future Writer sessions.
 1. Open a Writer document.
 2. Select **Writer.AI > AI Formatter**.
 3. Enter an instruction, such as `Indent every paragraph by two characters`.
-4. The validated plan is applied automatically.
-   Plans that change text or merge cells ask for confirmation first.
+4. Review the plan, then click **Apply** or **Cancel**.
+   A warning identifies plans that change text or merge cells.
    A completion message reports the number of planned properties.
 5. Use LibreOffice's Ctrl+Z to revert the complete formatting operation if needed.
 
@@ -65,6 +85,16 @@ original selection to remain in place. Ambiguous paragraph matches are
 rejected before formatting. When an operation fails, Writer.AI attempts to
 roll back changes in its undo context; recovery also depends on LibreOffice's
 undo support for the specific operation. Use `Ctrl+Z` to undo a successful request.
+The property comparison covers style, bold, font size, color, alignment,
+and first-line indent for targeted paragraphs and selections. It also covers
+table pagination and background colors in the first 20 cells. Review the full
+JSON plan for other properties.
+Indentation shows the current millimeter value and requested character count;
+it does not predict exact pagination.
+Visual `page_N.line_N` targeting is unsupported because positions change with
+layout. Use a paragraph number or a distinctive phrase instead. The completion
+message lists processed target groups; a failure reports an error and attempts
+to undo the whole operation.
 
 ## Development
 
@@ -78,6 +108,12 @@ Run the complete test suite:
 
 ```sh
 make test
+```
+
+Test plan parsing and validation without LibreOffice:
+
+```sh
+make test-plan
 ```
 
 The suite includes real headless LibreOffice document tests, DOCX round-trip

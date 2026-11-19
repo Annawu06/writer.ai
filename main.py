@@ -2,12 +2,15 @@ import uno
 import re
 import unohelper
 import json
-import math
 import os
 import traceback
 import sys # To print to stderr
 import threading
 from collections import deque
+from format_plan import (
+    parse_model_json, validate_format_request, count_format_operations,
+    changes_document_content,
+)
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from urllib.parse import urlparse
@@ -31,6 +34,7 @@ from com.sun.star.awt.MessageBoxResults import YES
 from com.sun.star.awt.FontWeight import NORMAL
 from com.sun.star.awt.FontSlant import NONE
 from com.sun.star.awt.FontUnderline import NONE as UNDERLINE_NONE
+from com.sun.star.beans.PropertyState import AMBIGUOUS_VALUE
 
 
 # select file to format
@@ -154,264 +158,215 @@ def get_doc(ctx):
     return desktop.getCurrentComponent()
 
 
-FORMAT_KEYS = {
-    "bold", "italic", "underline", "font_size", "font_color",
-    "font_name", "font_family", "highlight", "remove_highlight",
-    "align_center", "align_left", "align_right", "align_justify",
-    "replace_text", "insert_text", "insert_before", "clear_format",
-    "title", "body", "paragraph_style", "first_line_indent",
-}
-TABLE_KEYS = {
-    "cell_background", "table_background", "header", "format_header",
-    "header_background", "header_bold", "align", "font_name",
-    "font_family", "font_size", "font_color", "repeat_header",
-    "first_column_bold", "zebra", "zebra_background", "row_height",
-    "border_color", "border_width", "column_widths",
-    "merge_cells", "auto_align",
-    "caption", "title", "number", "caption_prefix", "split", "keep_together",
-}
-
-
-def _valid_value(key, value):
-    if key in {"bold", "italic", "remove_highlight", "clear_format", "title", "body", "insert_before", "header", "format_header", "header_bold", "repeat_header", "first_column_bold", "zebra", "auto_align", "split", "keep_together"}:
-        return isinstance(value, bool)
-    if key in {"font_size", "first_line_indent", "row_height", "border_width", "number"}:
-        limits = {
-            "font_size": (1, 200), "first_line_indent": (0, 20),
-            "row_height": (0, 1000), "border_width": (0, 20),
-            "number": (0, 100000),
-        }
-        low, high = limits[key]
-        return (isinstance(value, (int, float)) and not isinstance(value, bool)
-                and math.isfinite(value) and low <= value <= high)
-    if key == "column_widths":
-        return (
-            isinstance(value, list)
-            and len(value) >= 2
-            and all(isinstance(item, (int, float)) and not isinstance(item, bool)
-                    and math.isfinite(item) and 0 < item <= 100 for item in value)
-            and abs(sum(value) - 100) < 0.01
-        )
-    if key == "merge_cells":
-        return (
-            isinstance(value, list)
-            and all(
-                isinstance(item, dict)
-                and isinstance(item.get("start"), str)
-                and isinstance(item.get("end"), str)
-                and re.fullmatch(r"[A-Z]{1,3}[1-9]\d{0,4}", item.get("start", ""))
-                and re.fullmatch(r"[A-Z]{1,3}[1-9]\d{0,4}", item.get("end", ""))
-                for item in value
-            )
-        )
-    if key == "underline":
-        return isinstance(value, bool) or (isinstance(value, str) and
-            bool(re.fullmatch(r"(?:[0-9]|1[0-8])(?:[0-9A-Fa-f]{6})?", value)))
-    if key in {"font_color", "highlight", "cell_background", "table_background", "header_background", "zebra_background", "border_color"}:
-        return (key == "highlight" and value is True) or (
-            isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 0xFFFFFF
-        ) or (isinstance(value, str) and bool(re.fullmatch(r"#?[0-9A-Fa-f]{6}", value)))
-    if key == "align":
-        return value in {"left", "right", "center", "justify"} if isinstance(value, str) else False
-    if key in {"font_name", "font_family", "replace_text", "insert_text", "paragraph_style", "caption", "caption_prefix"}:
-        return isinstance(value, str) and len(value) <= 10000
-    if key.startswith("align_"):
-        return isinstance(value, bool)
-    return False
-
-
-def _validation_issue(report, message):
-    if report is not None:
-        report.append(message)
-    log_to_console(message)
-
-
-def parse_model_json(content):
-    """Read one JSON object, including a fenced or prose-wrapped response.
-
-    Keep repairs narrow: a guessed comma or quote can change a formatting
-    instruction, so malformed plans other than trailing commas are rejected.
-    """
-    if isinstance(content, dict):
-        return content
-    if not isinstance(content, str):
-        raise ValueError("The model response is not text or an object")
-    decoder = json.JSONDecoder()
-    for match in re.finditer(r"\{", content):
-        candidate = content[match.start():]
-        for attempt in (candidate, _remove_trailing_commas(candidate)):
-            try:
-                result, _ = decoder.raw_decode(attempt)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(result, dict):
-                return result
-    raise ValueError("The model response contains no valid JSON object")
-
-
-def _remove_trailing_commas(text):
-    chars = []
-    in_string = False
-    escaped = False
-    for index, char in enumerate(text):
-        if in_string:
-            chars.append(char)
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-        elif char == '"':
-            in_string = True
-            chars.append(char)
-        elif char == "," and re.match(r"\s*[}\]]", text[index + 1:]):
-            continue
-        else:
-            chars.append(char)
-    return "".join(chars)
-
-
-def validate_style(style, allowed_keys, report=None):
-    if not isinstance(style, dict):
-        _validation_issue(report, "Ignoring formatting properties because the value is not an object")
-        return {}
-    clean_style = {}
-    for key, value in style.items():
-        if key not in allowed_keys:
-            _validation_issue(report, f"Ignoring unsupported formatting property: {key}")
-            continue
-        if (isinstance(value, str) if key == "title" and allowed_keys is TABLE_KEYS
-                else _valid_value(key, value)):
-            clean_style[key] = value
-        else:
-            _validation_issue(report, f"Ignoring invalid value for formatting property: {key}")
-    return clean_style
-
-
-def validate_format_request(request, report=None):
-    """Keep only known Writer scopes and properties before document mutation."""
-    if not isinstance(request, dict):
-        _validation_issue(report, "Formatting response must be a JSON object")
-        return {}
-
-    clean_request = {}
-    for scope, value in request.items():
-        if scope in {"selection", "all_pages", "document", "entire_doc"}:
-            clean_style = validate_style(value, FORMAT_KEYS, report)
-            if clean_style:
-                clean_request[scope] = clean_style
-        elif re.fullmatch(r"paragraph_\d+", str(scope)):
-            clean_style = validate_style(value, FORMAT_KEYS, report)
-            if clean_style:
-                clean_request[scope] = clean_style
-        elif scope == "paragraph_text":
-            if isinstance(value, dict) and isinstance(value.get("text"), str):
-                clean_style = validate_style(value.get("format", {}), FORMAT_KEYS, report)
-                if clean_style:
-                    clean_request[scope] = {"text": value["text"], "format": clean_style}
+def describe_plan_targets(plan, fmt):
+    """Describe the planned target range without modifying the document."""
+    descriptions = []
+    for scope, options in plan.items():
+        if scope in {"all_pages", "document", "entire_doc"}:
+            descriptions.append(f"{scope}: entire document")
+        elif scope == "selection":
+            descriptions.append("selection: current selection")
+        elif re.fullmatch(r"paragraph_\d+", scope) or scope == "paragraph_text":
+            descriptions.append(f"{scope}: 1 paragraph")
         elif scope == "paragraphs":
-            if not isinstance(value, dict):
-                continue
-            paragraphs = {}
-            for paragraph_scope, paragraph_style in value.items():
-                if re.fullmatch(r"paragraph_\d+", str(paragraph_scope)):
-                    clean_style = validate_style(paragraph_style, FORMAT_KEYS, report)
-                    if clean_style:
-                        paragraphs[paragraph_scope] = clean_style
-                elif paragraph_scope == "contains" and isinstance(paragraph_style, dict) and isinstance(paragraph_style.get("text"), str):
-                    clean_style = validate_style(paragraph_style.get("format", {}), FORMAT_KEYS, report)
-                    if clean_style:
-                        paragraphs[paragraph_scope] = {"text": paragraph_style["text"], "format": clean_style}
-            if paragraphs:
-                clean_request[scope] = paragraphs
+            descriptions.append(f"paragraphs: {len(options)} targets")
         elif scope == "structure":
-            if not isinstance(value, dict):
-                continue
-            structure = {}
-            if isinstance(value.get("infer"), bool):
-                structure["infer"] = value["infer"]
-            for role in {"title", "heading_1", "heading_2", "heading_3", "body"}:
-                if role in value:
-                    role_style = value[role]
-                    if role_style is True:
-                        structure[role] = True
-                    elif isinstance(role_style, dict):
-                        clean_style = validate_style(role_style, FORMAT_KEYS, report)
-                        if clean_style:
-                            structure[role] = clean_style
-            if len(structure) > 1 or any(role in structure for role in {"title", "heading_1", "heading_2", "heading_3", "body"}):
-                clean_request[scope] = structure
+            counts = {role: 0 for role in options if role != "infer"}
+            first_content_seen = False
+            plain_roles = {
+                "Title": "title", "Subtitle": "title", "Heading 1": "heading_1",
+                "Heading 2": "heading_2", "Heading 3": "heading_3",
+                "Text Body": "body", "Body Text": "body",
+                "Default Paragraph Style": "body", "Standard": "body",
+            }
+            for paragraph in fmt._paragraphs():
+                if not paragraph.String.strip():
+                    continue
+                role = (fmt._paragraph_role(paragraph, first_content_seen)
+                        if options.get("infer") else plain_roles.get(paragraph.ParaStyleName))
+                if role in counts:
+                    counts[role] += 1
+                first_content_seen = True
+            descriptions.extend(f"structure.{role}: {count} paragraph{'s' if count != 1 else ''}"
+                                for role, count in counts.items())
         elif scope == "tables":
-            if not isinstance(value, dict):
-                continue
-            tables = {}
-            for table_scope, table_style in value.items():
-                if re.fullmatch(r"(?:table_\d+|table_all|all)", str(table_scope)):
-                    table_base = {
-                        key: item for key, item in table_style.items()
-                        if key != "cells"
-                    } if isinstance(table_style, dict) else table_style
-                    clean_style = validate_style(table_base, TABLE_KEYS, report)
-                    if isinstance(table_style, dict) and isinstance(table_style.get("cells"), dict):
-                        cells = {}
-                        for cell_scope, cell_style in table_style["cells"].items():
-                            if re.fullmatch(r"row_\d+_col_\d+", str(cell_scope)):
-                                cell_clean_style = validate_style(cell_style, FORMAT_KEYS, report)
-                                if cell_clean_style:
-                                    cells[cell_scope] = cell_clean_style
-                        if cells:
-                            clean_style["cells"] = cells
-                    if clean_style:
-                        tables[table_scope] = clean_style
-            if tables:
-                clean_request[scope] = tables
-        elif re.fullmatch(r"page_\d+", str(scope)):
-            if not isinstance(value, dict):
-                continue
-            lines = {}
-            for line_scope, line_style in value.items():
-                if line_scope in {"line_all", "all"} or re.fullmatch(r"line_\d+", str(line_scope)):
-                    clean_style = validate_style(line_style, FORMAT_KEYS, report)
-                    if clean_style:
-                        lines[line_scope] = clean_style
-            if lines:
-                clean_request[scope] = lines
-        elif re.fullmatch(r"table_\d+", str(scope)):
-            clean_style = validate_style(value, TABLE_KEYS, report)
-            if clean_style:
-                clean_request[scope] = clean_style
+            for table_scope in options:
+                count = len(fmt.get_tables(table_scope))
+                descriptions.append(f"tables.{table_scope}: {count} table{'s' if count != 1 else ''}")
+        elif re.fullmatch(r"table_\d+", scope):
+            count = len(fmt.get_tables(scope))
+            descriptions.append(f"{scope}: {count} table{'s' if count != 1 else ''}")
+    return descriptions
+
+
+def _paragraph_property(paragraph, name):
+    """Return a visible value, including mixed character formatting."""
+    try:
+        if paragraph.getPropertyState(name) == AMBIGUOUS_VALUE:
+            return "mixed"
+        return getattr(paragraph, name)
+    except Exception:
+        return "unknown"
+
+
+def _paragraph_changes(paragraph, style, implied_style=None):
+    """Compare supported paragraph properties with the requested values."""
+    changes = []
+    requested_style = implied_style or style.get("paragraph_style")
+    if style.get("title"):
+        requested_style = "Title"
+    if style.get("body"):
+        requested_style = "Text Body"
+    if requested_style:
+        current = _paragraph_property(paragraph, "ParaStyleName")
+        if current != requested_style:
+            changes.append(f"style: {current} → {requested_style}")
+
+    for key, property_name, display in (
+        ("bold", "CharWeight", lambda value: "on" if value >= BOLD else "off"),
+        ("font_size", "CharHeight", lambda value: f"{value:g} pt"),
+        ("font_color", "CharColor", lambda value: "automatic" if value < 0 else f"#{value:06X}"),
+    ):
+        if key not in style:
+            continue
+        current = _paragraph_property(paragraph, property_name)
+        try:
+            current_text = display(current) if current not in {"mixed", "unknown"} else current
+        except (TypeError, ValueError):
+            current_text = "unknown"
+        requested = style[key]
+        if key == "bold":
+            requested = "on" if requested else "off"
+        elif key == "font_size":
+            requested = f"{requested:g} pt"
+        elif isinstance(requested, int):
+            requested = f"#{requested:06X}"
         else:
-            _validation_issue(report, f"Ignoring unsupported formatting scope: {scope}")
-    if report is not None and clean_request != request and not report:
-        _validation_issue(report, "Formatting plan contains unsupported or invalid structure")
-    return clean_request
+            requested = "#" + requested.lstrip("#").upper()
+        if current_text != requested:
+            changes.append(f"{key}: {current_text} → {requested}")
+
+    alignments = {
+        "align_left": (LEFT, "left"), "align_right": (RIGHT, "right"),
+        "align_center": (CENTER, "center"), "align_justify": (BLOCK, "justify"),
+    }
+    current_alignment = _paragraph_property(paragraph, "ParaAdjust")
+    current_alignment = next(
+        (name for value, name in alignments.values() if current_alignment == value),
+        current_alignment if current_alignment in {"mixed", "unknown"} else "unknown",
+    )
+    for key, (_, requested) in alignments.items():
+        if style.get(key) and current_alignment != requested:
+            changes.append(f"alignment: {current_alignment} → {requested}")
+
+    if "first_line_indent" in style:
+        current = _paragraph_property(paragraph, "ParaFirstLineIndent")
+        current_text = f"{current / 100:.1f} mm" if isinstance(current, (int, float)) else current
+        changes.append(f"first-line indent: {current_text} → {style['first_line_indent']} characters")
+    return changes
 
 
-def count_format_operations(request):
-    """Count executable leaf properties in a validated formatting request."""
-    if not isinstance(request, dict):
-        return 0
-    count = 0
-    for key, value in request.items():
-        if key == "tables" and isinstance(value, dict):
-            count += sum(count_format_operations(item) for item in value.values())
-        elif key in {"paragraphs", "structure"} and isinstance(value, dict):
-            count += sum(count_format_operations(item) for item in value.values() if isinstance(item, dict))
-        elif isinstance(value, dict):
-            count += count_format_operations(value)
-        else:
-            count += 1
-    return count
+def _table_changes(table, options, fmt):
+    """Compare table pagination and the first 20 affected cell backgrounds."""
+    changes = []
+    for key, property_name in (("split", "Split"), ("keep_together", "KeepTogether")):
+        if key in options:
+            current = bool(getattr(table, property_name))
+            if current != options[key]:
+                changes.append(f"{key}: {current} → {options[key]}")
+    if options.get("repeat_header") and not table.RepeatHeadline:
+        changes.append("repeat_header: False → True")
+
+    color_keys = {"table_background", "cell_background", "header_background", "zebra", "zebra_background"}
+    if not color_keys.intersection(options):
+        return changes
+    header = options.get("header", options.get("format_header", False))
+    names = table.getCellNames()
+    for cell_name in names[:20]:
+        row = fmt._cell_row(cell_name)
+        cell_options = dict(options)
+        if options.get("zebra") and row and row % 2 == 0:
+            cell_options["cell_background"] = options.get("zebra_background", "F2F2F2")
+        color = cell_options.get("header_background" if header and row == 1 else "cell_background")
+        if color is None:
+            color = cell_options.get("table_background")
+        if color is None:
+            continue
+        cell = table.getCellByName(cell_name)
+        current = "transparent" if cell.BackTransparent else f"#{cell.BackColor:06X}"
+        requested = f"#{fmt.parse_color(color):06X}"
+        if current != requested:
+            changes.append(f"{cell_name} background: {current} → {requested}")
+    if len(names) > 20:
+        changes.append(f"{len(names) - 20} additional cells omitted from comparison")
+    return changes
 
 
-def changes_document_content(plan):
-    if isinstance(plan, dict):
-        return any(key in {"replace_text", "insert_text", "merge_cells"}
-                   or changes_document_content(value) for key, value in plan.items())
-    if isinstance(plan, list):
-        return any(changes_document_content(value) for value in plan)
-    return False
+def describe_plan_differences(plan, fmt):
+    """Preview comparable properties; leave other operations in the full plan."""
+    paragraphs = list(fmt._paragraphs())
+    entries = []
+
+    def add(label, paragraph, style, implied_style=None):
+        changes = _paragraph_changes(paragraph, style, implied_style)
+        if changes:
+            entries.append(f"{label}: " + "; ".join(changes))
+
+    for scope, options in plan.items():
+        if scope == "selection":
+            cursor = fmt.get_selection_cursor()
+            if cursor is not None:
+                add("selection", cursor, options)
+        elif re.fullmatch(r"paragraph_\d+", scope):
+            index = int(scope.split("_")[1]) - 1
+            add(scope, paragraphs[index], options)
+        elif scope == "paragraph_text":
+            needle = options["text"].casefold()
+            match = next((p for p in paragraphs if needle in p.String.casefold()), None)
+            if match is not None:
+                add("paragraph_text", match, options["format"])
+        elif scope == "paragraphs":
+            for target, style in options.items():
+                if re.fullmatch(r"paragraph_\d+", target):
+                    add(target, paragraphs[int(target.split("_")[1]) - 1], style)
+                else:
+                    needle = style["text"].casefold()
+                    match = next((p for p in paragraphs if needle in p.String.casefold()), None)
+                    if match is not None:
+                        add("paragraphs.contains", match, style["format"])
+        elif scope == "structure":
+            plain_roles = {
+                "Title": "title", "Subtitle": "title", "Heading 1": "heading_1",
+                "Heading 2": "heading_2", "Heading 3": "heading_3",
+                "Text Body": "body", "Body Text": "body",
+                "Default Paragraph Style": "body", "Standard": "body",
+            }
+            style_names = {
+                "title": "Title", "heading_1": "Heading 1", "heading_2": "Heading 2",
+                "heading_3": "Heading 3", "body": "Text Body",
+            }
+            first_content_seen = False
+            for index, paragraph in enumerate(paragraphs, start=1):
+                if not paragraph.String.strip():
+                    continue
+                role = (fmt._paragraph_role(paragraph, first_content_seen) if options.get("infer")
+                        else plain_roles.get(paragraph.ParaStyleName))
+                if role in options:
+                    style = options[role] if isinstance(options[role], dict) else {}
+                    add(f"paragraph_{index} ({role})", paragraph, style, style_names[role])
+                first_content_seen = True
+        elif scope == "tables" or re.fullmatch(r"table_\d+", scope):
+            table_options = options if scope == "tables" else {scope: options}
+            for table_scope, style in table_options.items():
+                for table in fmt.get_tables(table_scope):
+                    changes = _table_changes(table, style, fmt)
+                    if changes:
+                        entries.append(f"{table_scope}: " + "; ".join(changes))
+    if not entries:
+        return ["No comparable property changes detected; review the full plan for other operations."]
+    if len(entries) > 50:
+        return entries[:50] + [f"… {len(entries) - 50} more paragraph changes; review the full plan."]
+    return entries
 
 
 class Format:
@@ -550,13 +505,14 @@ class Format:
     def format_document_structure(self, options):
         """Apply semantic paragraph roles without touching paragraphs in tables."""
         if not isinstance(options, dict):
-            return
+            return 0
         infer = options.get("infer", False) is True
         first_content_seen = False
         roles = {"title", "heading_1", "heading_2", "heading_3", "body"}
         paragraphs = list(self._paragraphs())
         style_assignments = []
         indent_assignments = []
+        matched_count = 0
         for paragraph_index, paragraph in enumerate(paragraphs):
             if not paragraph.String.strip():
                 continue
@@ -578,6 +534,7 @@ class Format:
             if not isinstance(role_options, dict):
                 first_content_seen = True
                 continue
+            matched_count += 1
             style_name = {
                 "title": "Title", "heading_1": "Heading 1",
                 "heading_2": "Heading 2", "heading_3": "Heading 3",
@@ -605,30 +562,8 @@ class Format:
                     )
                 except (TypeError, ValueError) as e:
                     log_to_console(f"Invalid structural first-line indent: {e}")
+        return matched_count
         
-    def get_all_lines_cursor(self, page_num):
-
-        try:
-            # 1. go to page 
-            self.goto_page(page_num)
-            view_cursor = self.doc.CurrentController.getViewCursor()
-            
-            # 2. move to the start of the page
-            view_cursor.jumpToStartOfPage()
-            start_range = view_cursor.getStart()
-            
-            # 3. move to the end of the page
-            view_cursor.jumpToEndOfPage()
-            end_range = view_cursor.getEnd()
-            
-            # 4. create a TextCursor
-            cursor = self.doc.Text.createTextCursorByRange(start_range)
-            cursor.gotoRange(end_range, True)
-            return cursor
-        except Exception as e:
-            log_to_console(f"Error creating page cursor: {e}")
-            return self.doc.Text.createTextCursor()
-
     def get_selection(self):
         """
                 获取选中的文本对象
@@ -637,23 +572,6 @@ class Format:
         if selection.getCount() > 0:
             return selection.getByIndex(0)
         return None
-        
-    def goto_page(self, page):
-        view_cursor = self.get_cursor()
-        view_cursor.jumpToPage(page)
-        view_cursor.jumpToStartOfPage() 
-
-    def goto_line(self, line):
-        view_cursor = self.get_cursor()
-        cursor = self.doc.Text.createTextCursorByRange(view_cursor.getStart())
-        for _ in range(line - 1):
-            if not cursor.gotoNextParagraph(False):
-                break
-                
-        cursor.gotoStartOfParagraph(False)
-        cursor.gotoEndOfParagraph(True)
-        return cursor
-        
         
     # ------------------------------------------------
     # Text Style
@@ -835,16 +753,16 @@ class Format:
             cursor.collapseToEnd()
             
         except Exception as e:
-            log_to_console(f"Error in insert_text_at_cursor: {e}")
+            raise RuntimeError("Unable to insert text") from e
 
 
     def replace_selection(self, cursor, text):
         try:
-            if cursor:
-                # 这里的逻辑不需要 doc，直接操作 cursor 即可
-                cursor.setString(text)
+            if cursor is None:
+                raise ValueError("No target cursor for replacement")
+            cursor.setString(text)
         except Exception as e:
-            log_to_console(f"Error in replace_selection: {e}")
+            raise RuntimeError("Unable to replace text") from e
 
     # 确保这个函数和 replace_selection 对齐
     def get_selected_text(self, cursor):
@@ -1087,6 +1005,16 @@ class Format:
   
 def precheck_format_request(format_request, fmt):
     """Check target existence and ambiguous searches before changing the document."""
+    def check_paragraph_styles(value):
+        if not isinstance(value, dict):
+            return
+        style_name = value.get("paragraph_style")
+        if style_name and not fmt.available_paragraph_style(style_name):
+            raise ValueError(f"Paragraph style does not exist: {style_name}")
+        for nested in value.values():
+            check_paragraph_styles(nested)
+
+    check_paragraph_styles(format_request)
     for scope, options in format_request.items():
         if scope == "selection" and fmt.get_selection_cursor() is None:
             raise ValueError("Select text before applying a selection instruction")
@@ -1118,98 +1046,93 @@ def precheck_format_request(format_request, fmt):
 
 
 def execute_format_request(format_request, fmt):
+    report = {"processed": [], "skipped": []}
     if not format_request:
-        return
+        return report
 
+    completed = report["processed"]
     for page_key, page_value in format_request.items():
         if page_key == "structure":
-            fmt.format_document_structure(page_value)
+            count = fmt.format_document_structure(page_value)
+            if count:
+                completed.append(f"structure ({count} paragraphs)")
+            else:
+                report["skipped"].append("structure (no matching paragraphs)")
             continue
 
         if re.fullmatch(r"paragraph_\d+", str(page_key)):
             paragraph_cursor = fmt.get_paragraph_cursor(int(page_key.split("_")[1]))
-            if paragraph_cursor:
-                apply_styles(fmt, paragraph_cursor, page_value)
+            if paragraph_cursor is None:
+                raise ValueError(f"Target {page_key} no longer exists")
+            apply_styles(fmt, paragraph_cursor, page_value)
+            completed.append(page_key)
             continue
 
         if page_key == "paragraph_text":
             paragraph_cursor = fmt.find_paragraph_cursor(page_value.get("text", ""))
-            if paragraph_cursor:
-                apply_styles(fmt, paragraph_cursor, page_value.get("format", {}))
+            if paragraph_cursor is None:
+                raise ValueError("Paragraph text target no longer exists")
+            apply_styles(fmt, paragraph_cursor, page_value.get("format", {}))
+            completed.append("paragraph_text")
             continue
 
         if page_key == "paragraphs":
             for paragraph_key, paragraph_style in page_value.items():
                 if re.fullmatch(r"paragraph_\d+", str(paragraph_key)):
                     paragraph_cursor = fmt.get_paragraph_cursor(int(paragraph_key.split("_")[1]))
-                    if paragraph_cursor:
-                        apply_styles(fmt, paragraph_cursor, paragraph_style)
+                    if paragraph_cursor is None:
+                        raise ValueError(f"Target {paragraph_key} no longer exists")
+                    apply_styles(fmt, paragraph_cursor, paragraph_style)
+                    completed.append(paragraph_key)
                 elif paragraph_key == "contains" and isinstance(paragraph_style, dict):
                     paragraph_cursor = fmt.find_paragraph_cursor(paragraph_style.get("text", ""))
-                    if paragraph_cursor:
-                        apply_styles(fmt, paragraph_cursor, paragraph_style.get("format", {}))
+                    if paragraph_cursor is None:
+                        raise ValueError("Paragraph text target no longer exists")
+                    apply_styles(fmt, paragraph_cursor, paragraph_style.get("format", {}))
+                    completed.append("paragraphs.contains")
             continue
 
         if page_key == "tables":
             for table_key, table_options in page_value.items():
                 for table in fmt.get_tables(table_key):
                     fmt.format_table(table, table_options)
+                    completed.append(table_key)
                     for cell_key, cell_style in table_options.get("cells", {}).items():
                         cell_match = re.fullmatch(r"row_(\d+)_col_(\d+)", str(cell_key))
                         if cell_match:
                             cell_cursor = fmt.get_table_cell_cursor(
                                 table, int(cell_match.group(1)), int(cell_match.group(2))
                             )
-                            if cell_cursor:
-                                apply_styles(fmt, cell_cursor, cell_style)
+                            if cell_cursor is None:
+                                raise ValueError(f"Target {table_key}.{cell_key} no longer exists")
+                            apply_styles(fmt, cell_cursor, cell_style)
+                            completed.append(f"{table_key}.{cell_key}")
             continue
 
         if str(page_key).startswith("table_"):
             for table in fmt.get_tables(page_key):
                 fmt.format_table(table, page_value)
+                completed.append(page_key)
             continue
 
-        # --- 核心修改点 ---
-        # 如果 key 是 selection，或者 page_value 包含特定指示
         if page_key == "selection":
-            cursor = fmt.get_selection_cursor() # 你需要在 Format 类实现这个方法
-            if cursor:
-                apply_styles(fmt, cursor, page_value)
-            else:
-                log_to_console("Selection formatting skipped because no text is selected.")
+            cursor = fmt.get_selection_cursor()
+            if cursor is None:
+                raise ValueError("Selection no longer exists")
+            apply_styles(fmt, cursor, page_value)
+            completed.append("selection")
             continue
 
         if page_key in ["all_pages", "document", "entire_doc"]:
             cursor = fmt.get_document_cursor()
             apply_styles(fmt, cursor, page_value)
+            completed.append(page_key)
             continue
             
-        # 2. 按页处理逻辑 (page_n)
-        try:
-            if "_" not in page_key:
-                continue
-                
-            page_num = int(page_key.split("_")[1])
-            fmt.goto_page(page_num)
+        raise ValueError(f"Unsupported formatting scope: {page_key}")
+    return report
 
-            for line_key, line_value in page_value.items():
-                # 确定每一行的 Cursor 范围
-                if line_key in ["line_all", "all"]:
-                    cursor = fmt.get_all_lines_cursor(page_num)
-                else:
-                    try:
-                        line_num = int(line_key.split("_")[1])
-                        cursor = fmt.goto_line(line_num)
-                    except (ValueError, IndexError):
-                        continue
-                
-                # 调用具体的样式应用函数
-                apply_styles(fmt, cursor, line_style_dict=line_value)
 
-        except Exception as e:
-            raise RuntimeError(f"Failed to format {page_key}") from e
-            
-            
 def apply_styles(fmt_instance, target_cursor, line_style_dict):
     """
     在指定的 cursor 上应用具体的样式属性
@@ -1288,7 +1211,7 @@ def execute_undoable_format(format_request, fmt, undo_manager):
     previous_actions = tuple(undo_manager.getAllUndoActionTitles())
     undo_manager.enterUndoContext("writer.ai formatting")
     try:
-        execute_format_request(format_request, fmt)
+        report = execute_format_request(format_request, fmt)
     except Exception:
         undo_manager.leaveUndoContext()
         current_actions = tuple(undo_manager.getAllUndoActionTitles())
@@ -1297,6 +1220,7 @@ def execute_undoable_format(format_request, fmt, undo_manager):
         raise
     else:
         undo_manager.leaveUndoContext()
+        return report
                 
                 
 class FormatRequestCallback(unohelper.Base, XCallback):
@@ -1477,20 +1401,19 @@ class MainJob(unohelper.Base, XJobExecutor):
 
             fmt = Format(self.ctx, target_doc)
             precheck_format_request(format_request, fmt)
-            if changes_document_content(format_request):
-                if not self._confirm_content_change(target_doc, format_request):
-                    log_to_console("Content-changing formatting plan declined by user.")
-                    return
-                if not guard.can_apply(format_request):
-                    log_to_console("Document changed while the plan was being confirmed.")
-                    return
+            if not self._preview_format_plan(target_doc, format_request, fmt):
+                log_to_console("Formatting plan declined by user.")
+                return
+            if not guard.can_apply(format_request):
+                log_to_console("Document changed while the plan was being reviewed.")
+                return
             undo_manager = target_doc.getUndoManager()
-            execute_undoable_format(format_request, fmt, undo_manager)
+            report = execute_undoable_format(format_request, fmt, undo_manager)
             log_to_console(
-                f"Formatting completed successfully: {count_format_operations(format_request)} operations."
+                f"Formatting completed successfully: {len(report['processed'])} target groups."
             )
             try:
-                self._show_result(target_doc, count_format_operations(format_request))
+                self._show_result(target_doc, report, count_format_operations(format_request))
             except Exception as display_error:
                 log_to_console(f"Unable to display formatting result: {display_error}")
         except Exception as e:
@@ -1498,7 +1421,7 @@ class MainJob(unohelper.Base, XJobExecutor):
             traceback.print_exc(file=sys.stderr)
             try:
                 self._message_box(target_doc, "Writer.AI Formatting Error",
-                                  "Formatting failed. The changes were rolled back where possible.").execute()
+                                  f"Formatting failed: {str(e)[:300]}\n\nThe changes were rolled back where possible.").execute()
             except Exception:
                 pass
         finally:
@@ -1594,29 +1517,69 @@ class MainJob(unohelper.Base, XJobExecutor):
         toolkit = self.sm.createInstanceWithContext("com.sun.star.awt.Toolkit", self.ctx)
         return toolkit.createMessageBox(parent_window, "errorbox", BUTTONS_OK, title, message)
 
-    def _show_result(self, target_doc, planned_properties):
+    def _show_result(self, target_doc, report, planned_properties):
         frame = target_doc.getCurrentController().getFrame()
         parent_window = frame.getContainerWindow() if frame else None
         toolkit = self.sm.createInstanceWithContext("com.sun.star.awt.Toolkit", self.ctx)
+        completed = report["processed"]
+        skipped = report["skipped"]
+        details = "\n".join(completed[:20])
+        if len(completed) > 20:
+            details += f"\n… and {len(completed) - 20} more processed target groups"
+        if skipped:
+            details += "\n\nNo matching target:\n" + "\n".join(skipped[:10])
         box = toolkit.createMessageBox(parent_window, "infobox", BUTTONS_OK,
                                        "Writer.AI Completed",
-                                       f"Formatting completed. Plan contained {planned_properties} properties.")
+                                       f"Processed target groups: {len(completed)}.\n"
+                                       f"No matching target groups: {len(skipped)}.\n"
+                                       f"Planned properties: {planned_properties}.\n\n{details}")
         box.execute()
 
-    def _confirm_content_change(self, target_doc, plan):
-        frame = target_doc.getCurrentController().getFrame()
-        parent_window = frame.getContainerWindow() if frame else None
-        toolkit = self.sm.createInstanceWithContext("com.sun.star.awt.Toolkit", self.ctx)
-        scopes = ", ".join(plan.keys())
-        message = (
-            f"The plan may change text or merge cells.\n"
-            f"Scopes: {scopes}\n"
-            f"Planned properties: {count_format_operations(plan)}\n\n"
-            "Apply these changes?"
-        )
-        box = toolkit.createMessageBox(parent_window, "querybox", BUTTONS_YES_NO,
-                                       "Writer.AI Confirm Changes", message)
-        return box.execute() == YES
+    def _preview_format_plan(self, target_doc, plan, fmt):
+        """Show the complete validated plan before touching the document."""
+        dialog = self.sm.createInstanceWithContext("com.sun.star.awt.UnoControlDialog", self.ctx)
+        model = self.sm.createInstanceWithContext("com.sun.star.awt.UnoControlDialogModel", self.ctx)
+        dialog.setModel(model)
+        dialog.setTitle("Writer.AI Formatting Plan")
+        dialog.setPosSize(0, 0, 600, 540, SIZE)
+
+        def add(name, control_type, x, y, width, height, **properties):
+            control_model = model.createInstance("com.sun.star.awt.UnoControl" + control_type + "Model")
+            model.insertByName(name, control_model)
+            for key, value in properties.items():
+                setattr(control_model, key, value)
+            dialog.getControl(name).setPosSize(x, y, width, height, POSSIZE)
+
+        warning = "This plan may change text or merge cells. Review it carefully.\n" if changes_document_content(plan) else ""
+        add("intro", "FixedText", 10, 10, 580, 38,
+            Label=warning + f"Review {count_format_operations(plan)} planned properties before applying.")
+        add("targets", "Edit", 10, 52, 580, 64,
+            Text="\n".join(describe_plan_targets(plan, fmt)),
+            MultiLine=True, VScroll=True, ReadOnly=True)
+        try:
+            differences = describe_plan_differences(plan, fmt)
+        except Exception as error:
+            log_to_console(f"Unable to calculate paragraph preview: {error}")
+            differences = ["Paragraph differences unavailable; review the full plan below."]
+        add("differences", "Edit", 10, 122, 580, 154,
+            Text="\n".join(differences), MultiLine=True, VScroll=True,
+            HScroll=True, ReadOnly=True)
+        add("plan", "Edit", 10, 282, 580, 206,
+            Text=json.dumps(plan, ensure_ascii=False, indent=2),
+            MultiLine=True, VScroll=True, HScroll=True, ReadOnly=True)
+        add("apply", "Button", 200, 499, 90, 26,
+            Label="Apply", PushButtonType=OK, DefaultButton=True)
+        add("cancel", "Button", 310, 499, 90, 26,
+            Label="Cancel", PushButtonType=CANCEL)
+
+        try:
+            frame = target_doc.getCurrentController().getFrame()
+            parent_window = frame.getContainerWindow() if frame else None
+            toolkit = self.sm.createInstanceWithContext("com.sun.star.awt.Toolkit", self.ctx)
+            dialog.createPeer(toolkit, parent_window)
+            return bool(dialog.execute())
+        finally:
+            dialog.dispose()
 
     def _start_format_request(self, target_doc, query, api_key, model, endpoint):
         guard = DocumentGuard(target_doc)
@@ -1790,9 +1753,11 @@ JSON object in the exact format below. Do not return a generic {"scope": ...,
 "properties": ...} object. For example, "bold the first paragraph" is
 {"paragraph_1":{"bold":true}}, and "highlight the first paragraph" is
 {"paragraph_1":{"highlight":true}}. A paragraph is not a visual line.
-Use paragraph_N for a numbered paragraph; use page_N.line_N only when the user
-explicitly refers to a visual page and line. Valid scopes: selection, all_pages, paragraph_N, paragraph_text,
-paragraphs, structure, page_N, tables, and table_N. Valid properties include
+Use paragraph_N for a numbered paragraph. Visual page and line positions are
+not supported because they change with layout. If the user provides only a
+visual page and line, return {} rather than guessing a paragraph. Valid scopes: selection,
+all_pages, paragraph_N, paragraph_text, paragraphs, structure, tables, and
+table_N. Valid properties include
 bold, italic, underline, font_size, font_color, font_name, highlight,
 remove_highlight, align_center, align_left, align_right, align_justify, title,
 body, paragraph_style, first_line_indent, replace_text, insert_text,
@@ -1805,7 +1770,10 @@ Use paragraph_text only for a distinctive phrase; repeated matches are rejected
 by the executor, so prefer paragraph_N when the user gives an ordinal.
 Use tables.table_N.cells.row_N_col_N for table cells. Use structure with title,
 heading_1, heading_2, heading_3, and body for document roles. Values must match
-their property meaning. Never include explanations or Markdown.
+their property meaning. Preserve the document's text, punctuation, formulas,
+code, and citations. Only use replace_text, insert_text, caption, or merge_cells
+when the user explicitly asks to change content or table structure. Never
+include explanations or Markdown.
 """
         if not api_key:
             api_key = os.environ.get("WRITER_AI_API_KEY", "")
